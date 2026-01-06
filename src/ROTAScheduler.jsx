@@ -111,6 +111,18 @@ export default function ROTAScheduler() {
         if (!saved && activeDeptId === 'mes') return parseInt(localStorage.getItem('rota_rotationWeeks') || '1');
         return parseInt(saved || '1');
     });
+
+    const [generationMeta, setGenerationMeta] = useState(() => {
+        const saved = localStorage.getItem(getSKey('generationMeta'));
+        if (saved) {
+            try {
+                const parsed = JSON.parse(saved);
+                return Array.isArray(parsed) ? parsed : [];
+            } catch (e) { return []; }
+        }
+        return [];
+    });
+
     const [startDate, setStartDate] = useState(() => {
         const saved = localStorage.getItem(getSKey('startDate'));
         if (saved) return saved;
@@ -122,14 +134,41 @@ export default function ROTAScheduler() {
             d.setDate(d.getDate() + 1);
         } else {
             // If Mon-Sat, snap to this week's Monday
-            // Mon=1...Sat=6. 
-            // diff = Current - (Day - 1). e.g. Mon(1): 1-1=0. Tue(2): 2-1=1.
             const day = d.getDay();
             const diff = d.getDate() - day + (day === 0 ? -6 : 1);
             d.setDate(diff);
         }
         return d.toISOString().split('T')[0];
     });
+
+    // Helper to get date object
+    const getDateForCell = (weekIndex, dayIndex) => {
+        let start = new Date(startDate);
+        // Snap to NEAREST Monday
+        const day = start.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+        let diff = 0;
+
+        if (day === 1) {
+            diff = 0; // Already Monday
+        } else if (day === 0) {
+            diff = 1; // Sunday -> Next Monday (+1)
+        } else if (day >= 5) {
+            diff = 8 - day; // Fri(5)->+3, Sat(6)->+2
+        } else {
+            diff = 1 - day; // Tue(2)->-1, Wed(3)->-2, Thu(4)->-3
+        }
+
+        start.setDate(start.getDate() + diff);
+
+        const dayOffset = weekIndex * 7 + dayIndex;
+        const date = new Date(start);
+        date.setDate(start.getDate() + dayOffset);
+        return date;
+    };
+
+    const formatDate = (date) => {
+        return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+    };
 
     const [schedule, setSchedule] = useState(() => {
         const saved = localStorage.getItem(getSKey('schedule'));
@@ -176,6 +215,13 @@ export default function ROTAScheduler() {
         start: new Date().toISOString().split('T')[0],
         end: new Date(new Date().setDate(new Date().getDate() + 30)).toISOString().split('T')[0]
     });
+    const [confirmDialog, setConfirmDialog] = useState({
+        isOpen: false,
+        title: '',
+        message: '',
+        onConfirm: null,
+        type: 'warning' // 'warning', 'danger', 'info'
+    });
 
     // Micro-Audio Helper
     const playMicroInteraction = (type = 'pop') => {
@@ -183,6 +229,7 @@ export default function ROTAScheduler() {
             const context = new (window.AudioContext || window.webkitAudioContext)();
             const oscillator = context.createOscillator();
             const gainNode = context.createGain();
+            let duration = 0.2;
 
             if (type === 'pop') {
                 oscillator.type = 'sine';
@@ -190,18 +237,32 @@ export default function ROTAScheduler() {
                 oscillator.frequency.exponentialRampToValueAtTime(0.01, context.currentTime + 0.1);
                 gainNode.gain.setValueAtTime(0.1, context.currentTime);
                 gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + 0.1);
+                duration = 0.1;
+                if (navigator.vibrate) navigator.vibrate(10);
             } else if (type === 'success') {
                 oscillator.type = 'triangle';
                 oscillator.frequency.setValueAtTime(523.25, context.currentTime); // C5
                 oscillator.frequency.exponentialRampToValueAtTime(1046.5, context.currentTime + 0.2); // C6
                 gainNode.gain.setValueAtTime(0.1, context.currentTime);
                 gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + 0.2);
+                duration = 0.2;
+                if (navigator.vibrate) navigator.vibrate(30);
+            } else if (type === 'magic') {
+                oscillator.type = 'sine';
+                // Triple chime effect
+                oscillator.frequency.setValueAtTime(523.25, context.currentTime); // C5
+                oscillator.frequency.exponentialRampToValueAtTime(783.99, context.currentTime + 0.15); // G5
+                oscillator.frequency.exponentialRampToValueAtTime(1046.5, context.currentTime + 0.35); // C6
+                gainNode.gain.setValueAtTime(0.15, context.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + 0.4);
+                duration = 0.4;
+                if (navigator.vibrate) navigator.vibrate([40, 80, 40]);
             }
 
             oscillator.connect(gainNode);
             gainNode.connect(context.destination);
             oscillator.start();
-            oscillator.stop(context.currentTime + 0.2);
+            oscillator.stop(context.currentTime + duration);
         } catch (e) { console.warn("Audio Context failed", e); }
     };
 
@@ -495,6 +556,7 @@ export default function ROTAScheduler() {
     useEffect(() => { localStorage.setItem(getSKey('startDate'), startDate); }, [startDate, activeDeptId]);
     useEffect(() => { localStorage.setItem(getSKey('outlookDL'), outlookDL); }, [outlookDL, activeDeptId]);
     useEffect(() => { localStorage.setItem(getSKey('patternConfig'), JSON.stringify(patternConfig)); }, [patternConfig, activeDeptId]);
+    useEffect(() => { localStorage.setItem(getSKey('generationMeta'), JSON.stringify(generationMeta)); }, [generationMeta, activeDeptId]);
 
     const switchDepartment = (id, forcedDepts = null) => {
         setActiveDeptId(id);
@@ -512,7 +574,6 @@ export default function ROTAScheduler() {
             finalEmps = id === 'mes' ? DEFAULT_EMPLOYEES : [];
         }
         setEmployees(finalEmps);
-
         const savedSched = localStorage.getItem(sKey('schedule'));
         setSchedule(savedSched ? JSON.parse(savedSched) : {});
 
@@ -520,6 +581,15 @@ export default function ROTAScheduler() {
         setRotationWeeks(parseInt(localStorage.getItem(sKey('rotationWeeks')) || '1'));
         setStartDate(localStorage.getItem(sKey('startDate')) || new Date().toISOString().split('T')[0]);
         setOutlookDL(localStorage.getItem(sKey('outlookDL')) || '');
+        const savedMeta = localStorage.getItem(sKey('generationMeta'));
+        if (savedMeta) {
+            try {
+                const parsed = JSON.parse(savedMeta);
+                setGenerationMeta(Array.isArray(parsed) ? parsed : []);
+            } catch (e) { setGenerationMeta([]); }
+        } else {
+            setGenerationMeta([]);
+        }
 
         setHistory([]);
         setHistoryIndex(-1);
@@ -582,7 +652,38 @@ export default function ROTAScheduler() {
                 });
             });
         }
-        return stats.sort((a, b) => b.total - a.total); // Sort by busiest
+
+        // Calculate Average
+        const totalAll = stats.reduce((a, b) => a + b.total, 0);
+        const avg = totalAll / (stats.length || 1);
+
+        // Calculate Variance and StdDev for Fairness Score
+        const variance = stats.reduce((a, b) => a + Math.pow(b.total - avg, 2), 0) / (stats.length || 1);
+        const stdDev = Math.sqrt(variance);
+
+        // Fairness Score: 100 is perfect, drops as stdDev increases relative to avg
+        const fairnessScore = Math.max(0, Math.min(100, 100 - (stdDev / (avg || 1) * 100)));
+
+        // Outlier detection: > 1.5 standard deviation from average is significant
+        const outlierThreshold = 1.5 * stdDev;
+        const sortedStats = [...stats].sort((a, b) => b.total - a.total);
+        const highest = sortedStats[0];
+        const lowest = sortedStats[sortedStats.length - 1];
+
+        // Only mark as outlier if it actually deviates significantly and StdDev > 0.5
+        const busiestOutlier = highest && (highest.total - avg) > outlierThreshold && stdDev > 0.5 ? highest : null;
+        const leastOutlier = lowest && (avg - lowest.total) > outlierThreshold && stdDev > 0.5 ? lowest : null;
+
+        return {
+            details: sortedStats,
+            avg: avg.toFixed(1),
+            score: fairnessScore.toFixed(0),
+            stdDev: stdDev.toFixed(2),
+            isBalanced: stdDev < 0.8,
+            busiestResource: busiestOutlier,
+            leastResource: leastOutlier,
+            status: stdDev < 0.3 ? "Perfectly Equal" : stdDev < 0.8 ? "Stable Balance" : "Optimization Suggested"
+        };
     };
 
     const validateSchedule = () => {
@@ -591,6 +692,7 @@ export default function ROTAScheduler() {
 
         for (let week = 1; week <= rotationWeeks; week++) {
             DAYS.forEach((day, dayIndex) => {
+
                 // Check Double Booking (Same Day)
                 const dayEmps = {}; // empId -> [shifts]
                 ['A', 'B', 'C'].forEach(shift => {
@@ -616,18 +718,17 @@ export default function ROTAScheduler() {
                 });
 
                 // Check Rest Violation (Night C -> Next Day A)
-                // Current C
                 const keyC = `${week}-${day}-C`;
                 const cEmployees = schedule[keyC]?.employees || [];
 
-                // Next Day A
                 let nextWeek = week;
                 let nextDayIndex = dayIndex + 1;
                 if (nextDayIndex >= 7) {
                     nextDayIndex = 0;
                     nextWeek++;
                 }
-                if (nextWeek <= rotationWeeks) { // Only check if next day exists in schedule
+
+                if (nextWeek <= rotationWeeks) {
                     const nextDay = DAYS[nextDayIndex];
                     const keyNextA = `${nextWeek}-${nextDay}-A`;
                     const aEmployees = schedule[keyNextA]?.employees || [];
@@ -635,8 +736,8 @@ export default function ROTAScheduler() {
                     cEmployees.forEach(cEmp => {
                         if (!cEmp?.id) return;
                         if (aEmployees.find(aEmp => aEmp?.id === cEmp.id)) {
-                            errors[keyNextA] = { message: "Inadequate Rest (C → A)", type: 'warning' };
-                            errors[keyC] = { message: "Inadequate Rest (C → A)", type: 'warning' };
+                            errors[keyNextA] = { message: "Inadequate Rest (C - A)", type: 'warning' };
+                            errors[keyC] = { message: "Inadequate Rest (C - A)", type: 'warning' };
                         }
                     });
                 }
@@ -709,7 +810,7 @@ export default function ROTAScheduler() {
 
         const available = employees.filter(emp => !workingThisDay.includes(emp.id));
 
-        // 2. Filter by rest period (Night C → Next Day A)
+        // 2. Filter by rest period (Night C ??? Next Day A)
         // If this is Shift A, check if they worked Shift C yesterday
         let finalAvailable = available;
         if (shift === 'A') {
@@ -792,39 +893,12 @@ export default function ROTAScheduler() {
         }
     }, [isInitialLoaded]);
 
-    // Helper to get date object
-    const getDateForCell = (weekIndex, dayIndex) => {
-        let start = new Date(startDate);
-        // Snap to NEAREST Monday
-        const day = start.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
-        let diff = 0;
-
-        if (day === 1) {
-            diff = 0; // Already Monday
-        } else if (day === 0) {
-            diff = 1; // Sunday -> Next Monday (+1)
-        } else if (day >= 5) {
-            diff = 8 - day; // Fri(5)->+3, Sat(6)->+2
-        } else {
-            diff = 1 - day; // Tue(2)->-1, Wed(3)->-2, Thu(4)->-3
-        }
-
-        start.setDate(start.getDate() + diff);
-
-        const dayOffset = weekIndex * 7 + dayIndex;
-        const date = new Date(start);
-        date.setDate(start.getDate() + dayOffset);
-        return date;
-    };
-
-    const formatDate = (date) => {
-        return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
-    };
-
     const generateEmptySchedule = () => {
         const newSchedule = {};
         for (let week = 1; week <= rotationWeeks; week++) {
-            DAYS.forEach(day => {
+            DAYS.forEach((day, dIdx) => {
+                const date = getDateForCell(week - 1, dIdx);
+
                 ['A', 'B', 'C'].forEach(shift => {
                     const key = `${week}-${day}-${shift}`;
                     newSchedule[key] = {
@@ -1067,10 +1141,9 @@ export default function ROTAScheduler() {
             for (let dIdx = 0; dIdx < 7; dIdx++) {
                 const cellDate = getDateForCell(w - 1, dIdx);
                 const dateStr = cellDate.toISOString().split('T')[0];
-                
-                // Check if this date matches any holiday
+
                 const holiday = GREATER_NOIDA_HOLIDAYS_2026.find(h => h.date === dateStr);
-                
+
                 if (holiday) {
                     const dayName = DAYS[dIdx];
                     // Apply holiday to all shifts for this day
@@ -1090,8 +1163,48 @@ export default function ROTAScheduler() {
         return { updatedSchedule, holidayCount };
     };
 
-    // INTELLIGENT AUTO-GENERATION BASED ON RULES
     const assignRotaAutomatically = async () => {
+        // Validation: Ensure generationMeta is an array (Safety check for legacy data)
+        const currentMeta = Array.isArray(generationMeta) ? generationMeta : [];
+
+        // Overwrite Protection & Overlap Detection
+        const targetStart = new Date(startDate);
+        const targetEnd = new Date(startDate);
+        targetEnd.setDate(targetEnd.getDate() + (rotationWeeks * 7) - 1);
+
+        const overlappingGen = currentMeta.find(gen => {
+            const genStart = new Date(gen.start);
+            const genEnd = new Date(gen.end);
+            // Check if periods overlap
+            return (targetStart <= genEnd && targetEnd >= genStart);
+        });
+
+        if (overlappingGen) {
+            const lastTime = new Date(overlappingGen.timestamp).toLocaleString('en-IN', {
+                dateStyle: 'medium',
+                timeStyle: 'short'
+            });
+
+            setConfirmDialog({
+                isOpen: true,
+                title: 'Overwrite Detection',
+                type: 'warning',
+                message: `This period (or part of it) was already generated on ${lastTime}. Re-generating will overwrite ALL existing assignments for these dates to ensure accurate calculations. Do you want to proceed?`,
+                onConfirm: executeAutoGeneration
+            });
+            return;
+        }
+
+        executeAutoGeneration();
+    };
+
+    const executeAutoGeneration = async () => {
+        // Validation: Ensure generationMeta is an array (Safety check for legacy data)
+        const currentMeta = Array.isArray(generationMeta) ? generationMeta : [];
+        const targetStart = new Date(startDate);
+        const targetEnd = new Date(startDate);
+        targetEnd.setDate(targetEnd.getDate() + (rotationWeeks * 7) - 1);
+
         const newSchedule = {};
 
         if (activeDept.type === 'MES') {
@@ -1111,16 +1224,39 @@ export default function ROTAScheduler() {
         }
 
         // Apply holidays automatically
-        const { updatedSchedule, holidayCount } = applyHolidaysToSchedule(newSchedule);
+        const { updatedSchedule: autoSchedule, holidayCount } = applyHolidaysToSchedule(newSchedule);
 
-        setSchedule(updatedSchedule);
-        saveToHistory(updatedSchedule);
-        
+        // Smart Merge: Merge new generated part into existing schedule
+        const mergedSchedule = { ...schedule, ...autoSchedule };
+
+        // Update Generation Meta (Remove previous overlaps and add new one)
+        const filteredMeta = currentMeta.filter(gen => {
+            const genStart = new Date(gen.start);
+            const genEnd = new Date(gen.end);
+            return !(targetStart <= genEnd && targetEnd >= genStart);
+        });
+
+        const newMeta = [
+            ...filteredMeta,
+            {
+                start: targetStart.toISOString(),
+                end: targetEnd.toISOString(),
+                timestamp: new Date().toISOString()
+            }
+        ];
+
+        setGenerationMeta(newMeta);
+        setSchedule(mergedSchedule);
+        saveToHistory(mergedSchedule);
+
         const holidayMsg = holidayCount > 0 ? ` with ${holidayCount} holiday${holidayCount > 1 ? 's' : ''} applied` : '';
         showNotification(`${activeDept.name} Rota Generated Successfully${holidayMsg}`);
 
+        // Close dialog if it was open
+        setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+
         // Celebration!
-        playMicroInteraction('success');
+        playMicroInteraction('magic');
         confetti({
             particleCount: 150,
             spread: 70,
@@ -1168,25 +1304,22 @@ export default function ROTAScheduler() {
 
         // Iterate through each employee and assign staggered patterns
         sortedEmps.forEach((emp, empIdx) => {
-            // Calculate total days to fill
-            const totalDays = rotationWeeks * 7;
-
             // Stagger start: each employee starts at a different point in the sequence
-            // Offset is proportional to their index multiplied by a shift duration or just 1
             const startOffset = (empIdx * 2) % sequence.length;
 
-            for (let dayOffset = 0; dayOffset < totalDays; dayOffset++) {
-                const week = Math.floor(dayOffset / 7) + 1;
-                const dayName = DAYS[dayOffset % 7];
-                const shiftAtDay = sequence[(dayOffset + startOffset) % sequence.length];
+            for (let week = 1; week <= rotationWeeks; week++) {
+                DAYS.forEach((day, dIdx) => {
+                    const dayOffset = (week - 1) * 7 + dIdx;
+                    const shiftAtDay = sequence[(dayOffset + startOffset) % sequence.length];
 
-                if (shiftAtDay !== 'Off') {
-                    const key = `${week}-${dayName}-${shiftAtDay}`;
-                    if (!newSchedule[key]) {
-                        newSchedule[key] = { employees: [], status: 'normal', note: 'Pattern' };
+                    if (shiftAtDay !== 'Off') {
+                        const key = `${week}-${day}-${shiftAtDay}`;
+                        if (!newSchedule[key]) {
+                            newSchedule[key] = { employees: [], status: 'normal', note: 'Pattern' };
+                        }
+                        newSchedule[key].employees.push(emp);
                     }
-                    newSchedule[key].employees.push(emp);
-                }
+                });
             }
         });
 
@@ -1213,8 +1346,6 @@ export default function ROTAScheduler() {
                     const key = `${week}-${day}-${shift}`;
                     const dailyTeam = [];
 
-                    // Assign 1 person per shift by default in general mode
-                    // You can expand this logic as needed
                     if (sortedEmps.length > 0) {
                         dailyTeam.push(sortedEmps[empPointer % sortedEmps.length]);
                         empPointer++;
@@ -1238,157 +1369,79 @@ export default function ROTAScheduler() {
         for (let week = 1; week <= rotationWeeks; week++) {
             let rotation = (week - 1) % 2;
 
-            // Monday to Thursday: 2 persons per shift
-            ['Mon', 'Tue', 'Wed', 'Thu'].forEach(day => {
-                newSchedule[`${week}-${day}-A`] = {
-                    employees: shiftA.slice(0, 2),
-                    status: 'normal',
-                    note: '2 persons per shift'
-                };
-                newSchedule[`${week}-${day}-B`] = {
-                    employees: shiftB.slice(0, 2),
-                    status: 'normal',
-                    note: '2 persons per shift'
-                };
-                newSchedule[`${week}-${day}-C`] = {
-                    employees: shiftC.slice(0, 2),
-                    status: 'normal',
-                    note: '2 persons per shift'
-                };
+            // Monday to Thursday
+            ['Mon', 'Tue', 'Wed', 'Thu'].forEach((day) => {
+                newSchedule[`${week}-${day}-A`] = { employees: shiftA.slice(0, 2), status: 'normal', note: '2 persons per shift' };
+                newSchedule[`${week}-${day}-B`] = { employees: shiftB.slice(0, 2), status: 'normal', note: '2 persons per shift' };
+                newSchedule[`${week}-${day}-C`] = { employees: shiftC.slice(0, 2), status: 'normal', note: '2 persons per shift' };
             });
 
-            // FRIDAY: 3 persons working (1 from each shift), 3 OFF
+            // FRIDAY
             const friA = shiftA.length > 0 ? shiftA[rotation % shiftA.length] : null;
             const friB = shiftB.length > 0 ? shiftB[rotation % shiftB.length] : null;
             const friC = shiftC.length > 0 ? shiftC[rotation % shiftC.length] : null;
-
             newSchedule[`${week}-Fri-A`] = { employees: friA ? [friA] : [], status: 'normal', note: '1 person working' };
             newSchedule[`${week}-Fri-B`] = { employees: friB ? [friB] : [], status: 'normal', note: '1 person working' };
             newSchedule[`${week}-Fri-C`] = { employees: friC ? [friC] : [], status: 'normal', note: '1 person working' };
 
-            // SATURDAY: Person who was OFF on Friday works today
+            // SATURDAY
             const satA = shiftA.find(e => e.id !== friA?.id) || shiftA[0];
             const satB = shiftB.find(e => e.id !== friB?.id) || shiftB[0];
             const satC = shiftC.find(e => e.id !== friC?.id) || shiftC[0];
-
             newSchedule[`${week}-Sat-A`] = { employees: satA ? [satA] : [], status: 'normal', note: 'Friday OFF person works' };
             newSchedule[`${week}-Sat-B`] = { employees: satB ? [satB] : [], status: 'normal', note: 'Friday OFF person works' };
             newSchedule[`${week}-Sat-C`] = { employees: satC ? [satC] : [], status: 'normal', note: 'Friday OFF person works' };
 
-            // SUNDAY: 12-hour shifts (Even distribution)
-            // Day shift (7-7) alternates between Shift A members
+            // SUNDAY
             const sunA = shiftA[rotation % shiftA.length];
-
-            // Night shift (7-7) rotates between all 4 members of B and C over 4 weeks
             const bcTeam = [...shiftB, ...shiftC];
             const sunNight = bcTeam.length > 0 ? bcTeam[(week - 1) % bcTeam.length] : null;
-
-            newSchedule[`${week}-Sun-A`] = {
-                employees: sunA ? [sunA] : [],
-                status: 'normal',
-                note: '12hr shift (7am-7pm)'
-            };
+            newSchedule[`${week}-Sun-A`] = { employees: sunA ? [sunA] : [], status: 'normal', note: '12hr shift (7am-7pm)' };
             newSchedule[`${week}-Sun-B`] = { employees: [], status: 'normal', note: '' };
-            newSchedule[`${week}-Sun-C`] = {
-                employees: sunNight ? [sunNight] : [],
-                status: 'normal',
-                note: '12hr shift (7pm-7am)'
-            };
-
+            newSchedule[`${week}-Sun-C`] = { employees: sunNight ? [sunNight] : [], status: 'normal', note: '12hr shift (7pm-7am)' };
         }
     };
 
     const generate2ShiftSchedule = (newSchedule) => {
-        // In 2-Shift Mode, we ignore the original 'Shift A', 'Shift B' labels of employees
-        // and distribute ALL available employees into the 2 active shifts (A & B).
-        const allEmployees = [...employees];
+        let allEmployees = [...employees];
 
-        // Teams are now calculated dynamically inside the loop for rotation.
+        const abhayraj = allEmployees.find(e => e.name === "Abhayraj");
+        const javed = allEmployees.find(e => e.name === "Javed");
+
+        if (abhayraj && javed) {
+            const others = allEmployees.filter(e => e.name !== "Abhayraj" && e.name !== "Javed");
+            const mid = Math.ceil(allEmployees.length / 2);
+            allEmployees = [abhayraj, ...others.slice(0, mid - 1), javed, ...others.slice(mid - 1)];
+        }
 
         for (let week = 1; week <= rotationWeeks; week++) {
             let rotation = (week - 1) % 3;
-
-            // --- SHIFT EXCHANGE LOGIC ---
-            // "Every 2 weeks, exchange 1 person"
-            // We achieve this by rotating the entire employee list by 1 slot every 2 weeks.
-            const shiftChanges = Math.floor((week - 1) / 2);
-
-            const currentEmployees = [
-                ...allEmployees.slice(shiftChanges % allEmployees.length),
-                ...allEmployees.slice(0, shiftChanges % allEmployees.length)
-            ];
-
-            const midPoint = Math.ceil(currentEmployees.length / 2);
+            const midPoint = Math.ceil(allEmployees.length / 2);
+            const cycle = Math.floor((week - 1) / 2) % 2;
+            const shiftAmount = cycle * midPoint;
+            const currentEmployees = [...allEmployees.slice(shiftAmount), ...allEmployees.slice(0, shiftAmount)];
             const teamA = currentEmployees.slice(0, midPoint);
             const teamB = currentEmployees.slice(midPoint);
 
-            // Monday to Thursday
+            // Mon-Thu
             ['Mon', 'Tue', 'Wed', 'Thu'].forEach(day => {
-                newSchedule[`${week}-${day}-A`] = {
-                    employees: teamA,
-                    status: 'normal',
-                    note: `${teamA.length} persons`
-                };
-                newSchedule[`${week}-${day}-B`] = {
-                    employees: teamB,
-                    status: 'normal',
-                    note: `${teamB.length} persons`
-                };
-                newSchedule[`${week}-${day}-C`] = {
-                    employees: [],
-                    status: 'normal',
-                    note: ''
-                };
+                newSchedule[`${week}-${day}-A`] = { employees: teamA, status: 'normal', note: `${teamA.length} persons` };
+                newSchedule[`${week}-${day}-B`] = { employees: teamB, status: 'normal', note: `${teamB.length} persons` };
+                newSchedule[`${week}-${day}-C`] = { employees: [], status: 'normal', note: '' };
             });
 
-            // FRIDAY, SATURDAY, SUNDAY: 1 person works per shift, 2 persons OFF.
-            // This ensures everyone gets 2 days OFF during the weekend (Fri-Sun).
             const getWeekendWorker = (team, dayOffset) => {
                 if (team.length === 0) return [];
-                // rotation shifts the starting person each week
-                // dayOffset (0, 1, 2) shifts the person within the weekend
                 const index = (rotation + dayOffset) % team.length;
                 return [team[index]];
             };
 
-            // Friday (Offset 0)
-            newSchedule[`${week}-Fri-A`] = {
-                employees: getWeekendWorker(teamA, 0),
-                status: 'normal',
-                note: '1 person working, 2 OFF'
-            };
-            newSchedule[`${week}-Fri-B`] = {
-                employees: getWeekendWorker(teamB, 0),
-                status: 'normal',
-                note: '1 person working, 2 OFF'
-            };
-            newSchedule[`${week}-Fri-C`] = { employees: [], status: 'normal', note: '' };
-
-            // Saturday (Offset 1)
-            newSchedule[`${week}-Sat-A`] = {
-                employees: getWeekendWorker(teamA, 1),
-                status: 'normal',
-                note: '1 person working, 2 OFF'
-            };
-            newSchedule[`${week}-Sat-B`] = {
-                employees: getWeekendWorker(teamB, 1),
-                status: 'normal',
-                note: '1 person working, 2 OFF'
-            };
-            newSchedule[`${week}-Sat-C`] = { employees: [], status: 'normal', note: '' };
-
-            // Sunday (Offset 2)
-            newSchedule[`${week}-Sun-A`] = {
-                employees: getWeekendWorker(teamA, 2),
-                status: 'normal',
-                note: '1 person working, 2 OFF'
-            };
-            newSchedule[`${week}-Sun-B`] = {
-                employees: getWeekendWorker(teamB, 2),
-                status: 'normal',
-                note: '1 person working, 2 OFF'
-            };
-            newSchedule[`${week}-Sun-C`] = { employees: [], status: 'normal', note: '' };
+            // Fri-Sun
+            ['Fri', 'Sat', 'Sun'].forEach((day, idx) => {
+                newSchedule[`${week}-${day}-A`] = { employees: getWeekendWorker(teamA, idx), status: 'normal', note: '1 person working, 2 OFF' };
+                newSchedule[`${week}-${day}-B`] = { employees: getWeekendWorker(teamB, idx), status: 'normal', note: '1 person working, 2 OFF' };
+                newSchedule[`${week}-${day}-C`] = { employees: [], status: 'normal', note: '' };
+            });
         }
     };
 
@@ -1426,6 +1479,7 @@ export default function ROTAScheduler() {
         for (let week = 1; week <= rotationWeeks; week++) {
             DAYS.forEach((day, dayIndex) => {
                 const dateObj = getDateForCell(week - 1, dayIndex);
+
                 const rowValues = {
                     date: formatDate(dateObj),
                     day: day
@@ -1691,7 +1745,7 @@ export default function ROTAScheduler() {
     };
 
     const generateWhatsAppSummary = async () => {
-        let msg = `📅 *ROTA Schedule Summary*\n\n`;
+        let msg = `???? *ROTA Schedule Summary*\n\n`;
 
         for (let week = 1; week <= rotationWeeks; week++) {
             DAYS.forEach((day, dayIndex) => {
@@ -1771,10 +1825,10 @@ export default function ROTAScheduler() {
     return (
         <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-teal-100 selection:text-teal-700">
             {notification && (
-                <div 
+                <div
                     className={`fixed top-6 right-6 z-[9999] px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 animate-slide-in border shimmer-btn ${notification.type === 'success' ? 'bg-white border-green-100 text-green-700' : 'bg-white border-red-100 text-red-700'
-                    }`}
-                    style={{ 
+                        }`}
+                    style={{
                         willChange: 'transform',
                         transform: 'translateZ(0)',
                         backfaceVisibility: 'hidden',
@@ -1790,375 +1844,538 @@ export default function ROTAScheduler() {
                 </div>
             )}
 
-            {/* Stats Modal */}
+            {/* Stats Modal / Fairness Index Dashboard */}
             {showStatsModal && (
-                <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 transition-all p-4">
-                    <div className={`rounded-3xl p-8 w-full max-w-md shadow-2xl border ring-1 ring-black/5 animate-slide-in ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-white/20'}`}>
-                        <h3 className={`text-2xl font-black mb-6 flex items-center gap-3 ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>
-                            <div className={`p-3 rounded-2xl ${isDarkMode ? 'bg-slate-800' : 'bg-teal-50'}`}>
-                                <BarChart3 className="text-teal-600" size={24} />
-                            </div>
-                            Fairness & Audit
-                        </h3>
+                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-3xl flex items-center justify-center z-[110] transition-all p-2 md:p-3 overflow-hidden">
+                    <motion.div
+                        initial={{ opacity: 0, scale: 0.9, y: 30 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        className={`rounded-[1.5rem] p-4 md:p-5 w-full max-w-[920px] max-h-[96vh] shadow-[0_40px_100px_-20px_rgba(0,0,0,0.6)] border relative overflow-hidden flex flex-col ${isDarkMode ? 'bg-slate-950/90 border-white/10' : 'bg-white/95 border-slate-200'}`}
+                    >
+                        {/* Decorative Premium Background Elements */}
+                        <div className="absolute top-0 right-0 w-[400px] h-[400px] bg-teal-500/10 blur-[120px] rounded-full -mr-48 -mt-48 pointer-events-none"></div>
+                        <div className="absolute bottom-0 left-0 w-[400px] h-[400px] bg-indigo-600/10 blur-[120px] rounded-full -ml-48 -mb-48 pointer-events-none"></div>
+                        <div className="absolute inset-0 opacity-[0.02] pointer-events-none bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.15)_1px,transparent_0)] bg-[length:32px_32px]"></div>
 
-                        {/* Monthly Audit Summary Header */}
-                        <div className={`mb-6 p-4 rounded-3xl border-2 shimmer-btn ${isDarkMode ? 'bg-slate-800/40 border-slate-700/50' : 'bg-teal-50 border-teal-100/50'}`}>
-                            <div className="flex items-center justify-between mb-3">
-                                <div className="flex items-center gap-2">
-                                    <div className="p-1.5 bg-teal-500 rounded-lg shadow-lg shadow-teal-500/20"><Sparkles size={12} className="text-white" /></div>
-                                    <h4 className={`font-black text-[13px] uppercase tracking-tighter ${isDarkMode ? 'text-teal-400' : 'text-teal-700'}`}>Monthly Audit Insights</h4>
+                        <div className="flex items-start justify-between mb-6 relative z-10">
+                            <div className="flex items-center gap-4">
+                                <div className={`p-3 rounded-[1.25rem] shadow-xl relative group ${isDarkMode ? 'bg-slate-900 text-teal-400 border border-white/10' : 'bg-teal-50 text-teal-600 border border-teal-100'}`}>
+                                    <BarChart3 size={28} strokeWidth={2} />
+                                    <div className="absolute inset-0 bg-teal-400/20 blur-xl opacity-0 group-hover:opacity-100 transition-opacity"></div>
                                 </div>
+                                <div className="flex flex-col">
+                                    <h3 className={`text-2xl md:text-3xl font-[1000] tracking-tighter ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                                        Fairness Index
+                                    </h3>
+                                    <div className="flex items-center gap-2 mt-0.5">
+                                        <div className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest ${isDarkMode ? 'bg-teal-500/10 text-teal-400' : 'bg-teal-50 text-teal-600'}`}>Intelligence Dashboard</div>
+                                        <div className="w-1 h-1 rounded-full bg-slate-400/50"></div>
+                                        <div className="text-[8px] font-bold text-slate-500 uppercase tracking-widest">Active Roster Audit</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center gap-3">
                                 <button
                                     onClick={exportToExcel}
-                                    className="p-1.5 hover:bg-teal-100/30 rounded-lg transition-colors text-teal-600"
-                                    title="Export Detailed Report"
-                                >
-                                    <FileSearch size={16} />
+                                    className={`px-4 py-2 rounded-xl transition-all border flex items-center gap-2.5 active:scale-95 group shadow-lg text-[10px] font-[900] uppercase tracking-wider ${isDarkMode ? 'bg-slate-900 border-white/10 text-teal-400 hover:bg-slate-800' : 'bg-white border-slate-200 text-teal-600 hover:bg-teal-50'}`}>
+                                    <Download size={14} />
+                                    Download Audit
                                 </button>
-                            </div>
-                            <div className="flex gap-4">
-                                <div className="flex-1">
-                                    <div className="text-[9px] font-black text-slate-400 uppercase mb-1">Total shifts</div>
-                                    <div className={`text-lg font-black ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>
-                                        {calculateStats().reduce((acc, s) => acc + s.total, 0)}
-                                    </div>
-                                </div>
-                                <div className="w-[1px] h-10 bg-slate-400/20"></div>
-                                <div className="flex-1 text-right">
-                                    <div className="text-[9px] font-black text-slate-400 uppercase mb-1">Nights (Shift C)</div>
-                                    <div className={`text-lg font-black text-violet-500`}>
-                                        {calculateStats().reduce((acc, s) => acc + s.night, 0)}
-                                    </div>
-                                </div>
+                                <button
+                                    onClick={() => setShowStatsModal(false)}
+                                    className={`p-2.5 rounded-xl transition-all border ${isDarkMode ? 'bg-slate-900 border-white/10 text-slate-400 hover:text-white hover:bg-slate-800' : 'bg-slate-100 border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-200'}`}
+                                >
+                                    <X size={20} />
+                                </button>
                             </div>
                         </div>
 
-                        <div className="space-y-4 max-h-[60vh] overflow-y-auto custom-scrollbar pr-2">
-                            {calculateStats().map(stat => {
-                                const busiest = calculateStats()[0].total || 1;
-                                const workloadPercent = (stat.total / busiest) * 100;
+                        <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 relative z-10">
+                            {(() => {
+                                const stats = calculateStats();
+                                const highest = stats.details[0] || { total: 0 };
+                                const lowest = stats.details[stats.details.length - 1] || { total: 0 };
 
                                 return (
-                                    <div key={stat.id} className={`p-4 rounded-2xl border transition-all ${isDarkMode ? 'bg-slate-800/50 border-slate-700/50 hover:bg-slate-800' : 'bg-slate-50 border-slate-200 hover:bg-white'}`}>
-                                        <div className="flex justify-between items-center mb-3">
-                                            <div>
-                                                <div className={`font-black text-sm ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>{stat.name}</div>
-                                                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Total Workload</div>
+                                    <div className="space-y-6">
+                                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                                            {/* Fairness Score Hero */}
+                                            <div className={`md:col-span-2 p-4 rounded-[1.25rem] border relative overflow-hidden group ${isDarkMode ? 'bg-slate-900/60 border-white/10' : 'bg-slate-50/80 border-slate-200'}`}>
+                                                <div className="absolute inset-0 bg-gradient-to-br from-teal-500/10 via-transparent to-indigo-600/10 opacity-0 group-hover:opacity-100 transition-opacity duration-700"></div>
+                                                <div className="relative z-10 flex items-center justify-between h-full">
+                                                    <div>
+                                                        <span className="text-[8px] font-black text-slate-500 uppercase tracking-[0.3em] block mb-1.5">Overall Score</span>
+                                                        <div className="flex items-baseline gap-1.5">
+                                                            <div className={`text-5xl font-[1000] tracking-tighter ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{stats.score}</div>
+                                                            <div className="text-lg font-black text-slate-400">/100</div>
+                                                        </div>
+                                                        <div className={`mt-2.5 px-2.5 py-1 rounded-lg inline-flex items-center gap-1.5 text-[9px] font-black uppercase tracking-tight border ${stats.score > 90 ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' : stats.score > 75 ? 'bg-amber-500/10 border-amber-500/30 text-amber-500' : 'bg-red-500/10 border-red-500/30 text-red-500'}`}>
+                                                            {stats.status}
+                                                            <Sparkles size={10} className={stats.score > 90 ? 'animate-pulse' : ''} />
+                                                        </div>
+                                                    </div>
+                                                    <div className="relative w-24 h-24 flex items-center justify-center">
+                                                        <svg className="w-full h-full -rotate-90">
+                                                            <circle cx="48" cy="48" r="42" fill="none" strokeWidth="6" className={isDarkMode ? 'stroke-white/5' : 'stroke-slate-200'} />
+                                                            <motion.circle
+                                                                cx="48" cy="48" r="42" fill="none" strokeWidth="6"
+                                                                strokeDasharray="263.8"
+                                                                initial={{ strokeDashoffset: 263.8 }}
+                                                                animate={{ strokeDashoffset: 263.8 - (263.8 * stats.score / 100) }}
+                                                                transition={{ duration: 1.5, ease: "easeOut" }}
+                                                                strokeLinecap="round"
+                                                                className={stats.score > 90 ? 'stroke-emerald-500' : stats.score > 75 ? 'stroke-teal-500' : 'stroke-amber-500'}
+                                                            />
+                                                        </svg>
+                                                        <div className="absolute inset-0 flex items-center justify-center">
+                                                            <div className={`p-2.5 rounded-full ${isDarkMode ? 'bg-slate-800' : 'bg-white'} shadow-lg`}>
+                                                                <ShieldCheck size={20} className={stats.score > 90 ? 'text-emerald-500' : 'text-teal-500'} />
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
                                             </div>
-                                            <div className={`text-xs font-black px-3 py-1.5 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-700 text-teal-400' : 'bg-white border-slate-100 text-teal-600 shadow-sm'}`}>
-                                                {stat.total} Shifts
+
+                                            {/* High/Low Insights */}
+                                            <div className="grid grid-rows-2 gap-3 md:col-span-2">
+                                                <div className={`p-4 rounded-[1.25rem] border flex items-center justify-between ${isDarkMode ? 'bg-slate-900/40 border-white/5' : 'bg-white border-slate-100 shadow-sm'}`}>
+                                                    <div className="flex items-center gap-3">
+                                                        <div className={`p-2.5 rounded-xl ${stats.busiestResource ? 'bg-red-500/10 text-red-500' : 'bg-teal-500/10 text-teal-500'}`}>
+                                                            {stats.busiestResource ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
+                                                        </div>
+                                                        <div>
+                                                            <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Load Anomaly</span>
+                                                            <div className={`text-base font-[900] tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{stats.busiestResource ? stats.busiestResource.name : 'All Optimal'}</div>
+                                                        </div>
+                                                    </div>
+                                                    <div className="text-right">
+                                                        <div className={`text-[13px] font-black ${stats.busiestResource ? 'text-red-500' : 'text-teal-500'}`}>{stats.busiestResource ? `+${(stats.busiestResource.total - stats.avg).toFixed(1)} shifts` : 'Balanced'}</div>
+                                                        <div className="text-[8px] font-bold text-slate-500 uppercase">vs Average ({stats.avg})</div>
+                                                    </div>
+                                                </div>
+
+                                                <div className={`p-4 rounded-[1.25rem] border flex items-center justify-between ${isDarkMode ? 'bg-slate-900/40 border-white/5' : 'bg-white border-slate-100 shadow-sm'}`}>
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="p-2.5 rounded-xl bg-orange-500/10 text-orange-500">
+                                                            <Calendar size={18} />
+                                                        </div>
+                                                        <div>
+                                                            <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Weekly Drift</span>
+                                                            <div className={`text-base font-[900] tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{stats.stdDev} StdDev</div>
+                                                        </div>
+                                                    </div>
+                                                    <div className="text-right">
+                                                        <div className="text-[13px] font-black text-slate-400">Target &lt; 0.8</div>
+                                                        <div className="text-[8px] font-bold text-slate-500 uppercase">Distribution Variance</div>
+                                                    </div>
+                                                </div>
                                             </div>
                                         </div>
 
-                                        {/* Main Workload Bar */}
-                                        <div className="w-full bg-slate-200/30 rounded-full h-1.5 mb-4 overflow-hidden">
-                                            <div className="bg-teal-500 h-full rounded-full transition-all duration-500" style={{ width: `${workloadPercent}%` }}></div>
+                                        {/* Dynamic Bar Chart */}
+                                        <div className={`p-6 md:p-8 rounded-[1.5rem] border relative overflow-hidden ${isDarkMode ? 'bg-slate-950/60 border-white/5' : 'bg-white border-slate-200 shadow-xl'}`}>
+                                            <div className="flex items-center justify-between mb-6">
+                                                <h4 className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 flex items-center gap-2">
+                                                    <div className="w-3 h-1 rounded-full bg-teal-500"></div>
+                                                    Workload Distribution Map
+                                                </h4>
+                                                <div className="flex gap-4">
+                                                    {['A', 'B', 'C'].map(shift => (
+                                                        <div key={shift} className="flex items-center gap-2">
+                                                            <div className={`w-1.5 h-1.5 rounded-sm ${shift === 'C' ? 'bg-violet-500' : shift === 'B' ? 'bg-amber-500' : 'bg-emerald-500'}`}></div>
+                                                            <span className="text-[8px] font-bold text-slate-400">Shift {shift}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+
+                                            <div className="flex items-end gap-2 md:gap-3 h-36 pt-4">
+                                                {stats.details.map((stat, idx) => {
+                                                    const heightPercent = Math.max(10, (stat.total / (highest.total || 1)) * 100);
+                                                    const isHighest = stat.id === highest.id;
+                                                    const empColor = employees.find(e => e.id === stat.id)?.color || '#94a3b8';
+
+                                                    return (
+                                                        <div key={stat.id} className="flex-1 flex flex-col items-center group relative h-full">
+                                                            <div className="flex-1 w-full flex flex-col justify-end min-w-[30px]">
+                                                                <motion.div
+                                                                    initial={{ height: 0 }}
+                                                                    animate={{ height: `${heightPercent}%` }}
+                                                                    transition={{ type: 'spring', damping: 15, stiffness: 100, delay: idx * 0.05 }}
+                                                                    className="w-full rounded-t-2xl transition-all relative group-hover:brightness-125"
+                                                                    style={{
+                                                                        background: `linear-gradient(to top, ${empColor}dd, ${empColor})`,
+                                                                        boxShadow: isHighest ? `0 0 25px ${empColor}30` : 'none'
+                                                                    }}
+                                                                >
+                                                                    <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-8 opacity-0 group-hover:opacity-100 transition-all pointer-events-none whitespace-nowrap z-50">
+                                                                        <div
+                                                                            className="px-3 py-1 rounded-xl text-[10px] font-black text-white shadow-2xl skew-x-[-10deg]"
+                                                                            style={{ backgroundColor: empColor }}
+                                                                        >
+                                                                            {stat.total} SHIFTS
+                                                                        </div>
+                                                                    </div>
+
+                                                                    <div className="absolute inset-0 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                                                        <div className="text-[10px] text-white/60 font-black">N:{stat.night}</div>
+                                                                        <div className="text-[10px] text-white/60 font-black">W:{stat.weekend}</div>
+                                                                    </div>
+                                                                </motion.div>
+                                                            </div>
+                                                            <div className="mt-4 flex flex-col items-center gap-1.5 px-1 w-full">
+                                                                <div className="w-8 h-8 rounded-full border-2 p-0.5" style={{ borderColor: isHighest ? empColor : isDarkMode ? 'rgba(255,255,255,0.1)' : '#e2e8f0' }}>
+                                                                    <div
+                                                                        className="w-full h-full rounded-full flex items-center justify-center text-[10px] font-black text-white shadow-inner"
+                                                                        style={{ backgroundColor: empColor }}
+                                                                    >
+                                                                        {stat.name[0]}
+                                                                    </div>
+                                                                </div>
+                                                                <div className="text-[10px] font-black uppercase tracking-tight truncate w-full text-center" style={{ color: isHighest ? empColor : isDarkMode ? '#94a3b8' : '#64748b' }}>
+                                                                    {stat.name.split(' ')[0]}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
                                         </div>
 
-                                        <div className="grid grid-cols-2 gap-4">
-                                            <div className="space-y-1">
-                                                <div className="flex justify-between text-[9px] font-bold uppercase tracking-widest text-slate-400">
-                                                    <span>Night</span>
-                                                    <span>{stat.night}</span>
-                                                </div>
-                                                <div className="w-full bg-slate-200/30 rounded-full h-1 overflow-hidden">
-                                                    <div className="bg-violet-500 h-full rounded-full" style={{ width: `${(stat.night / (stat.total || 1)) * 100}%` }}></div>
-                                                </div>
-                                            </div>
-                                            <div className="space-y-1">
-                                                <div className="flex justify-between text-[9px] font-bold uppercase tracking-widest text-slate-400">
-                                                    <span>Weekend</span>
-                                                    <span>{stat.weekend}</span>
-                                                </div>
-                                                <div className="w-full bg-slate-200/30 rounded-full h-1 overflow-hidden">
-                                                    <div className="bg-orange-500 h-full rounded-full" style={{ width: `${(stat.weekend / (stat.total || 1)) * 100}%` }}></div>
-                                                </div>
-                                            </div>
+                                        {/* Resource Cards Grid */}
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                                            {stats.details.map((stat, idx) => (
+                                                <motion.div
+                                                    key={stat.id}
+                                                    initial={{ opacity: 0, scale: 0.95 }}
+                                                    animate={{ opacity: 1, scale: 1 }}
+                                                    transition={{ delay: 0.3 + (idx * 0.05) }}
+                                                    className={`p-4 rounded-3xl border transition-all hover:scale-[1.02] hover:shadow-xl ${isDarkMode ? 'bg-slate-900/60 border-white/5 hover:border-teal-500/50' : 'bg-white border-slate-100 shadow-sm hover:border-teal-300'}`}
+                                                >
+                                                    <div className="flex items-center justify-between mb-4">
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="w-10 h-10 rounded-2xl flex items-center justify-center text-white text-sm font-black shadow-lg" style={{ backgroundColor: employees.find(e => e.id === stat.id)?.color || '#94a3b8' }}>
+                                                                {stat.name[0]}
+                                                            </div>
+                                                            <div>
+                                                                <div className={`text-[13px] font-[900] tracking-tight leading-none ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{stat.name}</div>
+                                                                <div className="text-[9px] font-bold text-slate-500 mt-1 uppercase tracking-widest">{employees.find(e => e.id === stat.id)?.shift} Base Preference</div>
+                                                            </div>
+                                                        </div>
+                                                        <div className={`text-xl font-[1000] tracking-tighter ${stat.id === highest.id ? 'text-teal-500' : isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{stat.total}</div>
+                                                    </div>
+                                                    <div className="grid grid-cols-2 gap-2">
+                                                        <div className={`px-3 py-2 rounded-2xl flex items-center gap-3 ${isDarkMode ? 'bg-slate-950/40' : 'bg-slate-50'}`}>
+                                                            <div className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-500"><Moon size={12} /></div>
+                                                            <div className="flex flex-col">
+                                                                <span className="text-[8px] font-black text-slate-500 uppercase">Nights</span>
+                                                                <span className={`text-xs font-black ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>{stat.night}</span>
+                                                            </div>
+                                                        </div>
+                                                        <div className={`px-3 py-2 rounded-2xl flex items-center gap-3 ${isDarkMode ? 'bg-slate-950/40' : 'bg-slate-50'}`}>
+                                                            <div className="p-1.5 rounded-lg bg-orange-500/10 text-orange-500"><Calendar size={12} /></div>
+                                                            <div className="flex flex-col">
+                                                                <span className="text-[8px] font-black text-slate-500 uppercase">Weekends</span>
+                                                                <span className={`text-xs font-black ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>{stat.weekend}</span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </motion.div>
+                                            ))}
                                         </div>
                                     </div>
                                 );
-                            })}
+                            })()}
                         </div>
 
-                        <div className="mt-8 flex justify-end">
-                            <button
-                                onClick={() => setShowStatsModal(false)}
-                                className={`px-8 py-3 rounded-xl font-bold transition-all active:scale-95 ${isDarkMode ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-                            >
-                                Done
-                            </button>
+                        {/* Footer Status */}
+                        <div className={`mt-6 pt-4 border-t flex items-center justify-between z-10 ${isDarkMode ? 'border-white/5' : 'border-slate-100'}`}>
+                            <div className="flex items-center gap-4">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-2 h-2 rounded-full bg-teal-500 animate-pulse"></div>
+                                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">System Operational</span>
+                                </div>
+                                <div className="text-[10px] font-bold text-slate-400 italic">Audit reflects {rotationWeeks} weeks of active scheduling data.</div>
+                            </div>
+                            <div className="text-[10px] font-[1000] text-teal-600/50 uppercase tracking-[0.2em]">© ROTA BASE INTELLIGENCE 2024</div>
                         </div>
-                    </div>
-                </div>
+                    </motion.div >
+                </div >
             )}
 
             {/* Allowance Modal */}
-            {showAllowanceModal && (
-                <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 transition-all p-4">
-                    <div className={`rounded-3xl p-8 w-full max-w-2xl shadow-2xl border ring-1 ring-black/5 animate-slide-in ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-white/20'}`}>
-                        <div className="flex justify-between items-center mb-6">
-                            <h3 className={`text-2xl font-black flex items-center gap-3 ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>
-                                <div className={`p-3 rounded-2xl ${isDarkMode ? 'bg-blue-900/30' : 'bg-blue-50'}`}>
-                                    <Wallet className="text-blue-500" size={24} />
-                                </div>
-                                Allowances Calculator
-                            </h3>
-                            <button onClick={() => setShowAllowanceModal(false)} className="text-slate-400 hover:text-slate-600"><X size={24} /></button>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-4 mb-6">
-                            <div>
-                                <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">Start Month/Date</label>
-                                <input
-                                    type="date"
-                                    value={allowanceRange.start}
-                                    onChange={(e) => setAllowanceRange({ ...allowanceRange, start: e.target.value })}
-                                    className={`w-full px-4 py-2 rounded-xl border font-bold ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
-                                />
-                            </div>
-                            <div>
-                                <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">End Month/Date</label>
-                                <input
-                                    type="date"
-                                    value={allowanceRange.end}
-                                    onChange={(e) => setAllowanceRange({ ...allowanceRange, end: e.target.value })}
-                                    className={`w-full px-4 py-2 rounded-xl border font-bold ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
-                                />
-                            </div>
-                        </div>
-
-                        <div className="space-y-3 max-h-[40vh] overflow-y-auto custom-scrollbar pr-2 mb-6">
-                            <table className="w-full text-left border-collapse">
-                                <thead>
-                                    <tr className={`border-b ${isDarkMode ? 'border-slate-800' : 'border-slate-100'}`}>
-                                        <th className="py-2 text-[10px] font-black uppercase text-slate-400">Employee</th>
-                                        <th className="py-2 text-[10px] font-black uppercase text-slate-400 text-center">Nights (C)</th>
-                                        <th className="py-2 text-[10px] font-black uppercase text-slate-400 text-center">Weekends</th>
-                                        <th className="py-2 text-[10px] font-black uppercase text-slate-400 text-center">Total</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {calculateAllowanceStats().map(s => (
-                                        <tr key={s.name} className={`border-b last:border-0 ${isDarkMode ? 'border-slate-800/50' : 'border-slate-50'}`}>
-                                            <td className={`py-3 font-bold text-sm ${isDarkMode ? 'text-slate-300' : 'text-slate-700'}`}>{s.name}</td>
-                                            <td className="py-3 text-center">
-                                                <span className={`px-2 py-1 rounded-lg font-black text-xs ${isDarkMode ? 'bg-violet-900/30 text-violet-400' : 'bg-violet-50 text-violet-600'}`}>{s.night}</span>
-                                            </td>
-                                            <td className="py-3 text-center">
-                                                <span className={`px-2 py-1 rounded-lg font-black text-xs ${isDarkMode ? 'bg-orange-900/30 text-orange-400' : 'bg-orange-50 text-orange-600'}`}>{s.weekend}</span>
-                                            </td>
-                                            <td className="py-3 text-center font-black text-sm text-teal-500">{s.total}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-
-                        <div className="flex justify-between items-center bg-slate-100/50 dark:bg-slate-800/50 p-4 rounded-2xl">
-                            <div className="text-[10px] font-bold text-slate-400 italic">
-                                * Calculated based on current schedule dates within range
-                            </div>
-                            <div className="flex gap-3">
-                                <button
-                                    onClick={() => downloadAllowanceExcel(calculateAllowanceStats())}
-                                    className="flex items-center gap-2 px-6 py-2.5 bg-green-600 text-white rounded-xl font-bold hover:bg-green-700 transition-all shadow-lg shadow-green-600/20 active:scale-95"
-                                >
-                                    <FileSpreadsheet size={16} /> Export Detailed Excel
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* Leave Modal */}
-            {showLeaveModal && (
-                <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 transition-all">
-                    <div className={`rounded-3xl p-8 w-[28rem] shadow-2xl border ring-1 ring-black/5 ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-white/20'}`}>
-                        <h3 className={`text-2xl font-bold mb-6 flex items-center gap-3 ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>
-                            <div className={`p-3 rounded-2xl ${isDarkMode ? 'bg-slate-800' : 'bg-red-50'}`}>
-                                <UserX className="text-red-500" size={24} />
-                            </div>
-                            Mark Leave
-                        </h3>
-
-                        <div className="space-y-5">
-                            <div>
-                                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Employee</label>
-                                <select
-                                    value={leaveData.employee}
-                                    onChange={(e) => setLeaveData({ ...leaveData, employee: e.target.value })}
-                                    className={`w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none font-medium ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-100' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
-                                >
-                                    <option value="">Select Employee</option>
-                                    {employees.map(emp => (
-                                        <option key={emp.id} value={emp.id}>
-                                            {emp.name} (Shift {emp.shift})
-                                        </option>
-                                    ))}
-                                </select>
+            {
+                showAllowanceModal && (
+                    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 transition-all p-4">
+                        <div className={`rounded-3xl p-8 w-full max-w-2xl shadow-2xl border ring-1 ring-black/5 animate-slide-in ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-white/20'}`}>
+                            <div className="flex justify-between items-center mb-6">
+                                <h3 className={`text-2xl font-black flex items-center gap-3 ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>
+                                    <div className={`p-3 rounded-2xl ${isDarkMode ? 'bg-blue-900/30' : 'bg-blue-50'}`}>
+                                        <Wallet className="text-blue-500" size={24} />
+                                    </div>
+                                    Allowances Calculator
+                                </h3>
+                                <button onClick={() => setShowAllowanceModal(false)} className="text-slate-400 hover:text-slate-600"><X size={24} /></button>
                             </div>
 
-                            <div className="grid grid-cols-2 gap-4">
+                            <div className="grid grid-cols-2 gap-4 mb-6">
                                 <div>
-                                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Week</label>
-                                    <select
-                                        value={leaveData.week}
-                                        onChange={(e) => setLeaveData({ ...leaveData, week: parseInt(e.target.value) })}
-                                        className={`w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-100' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
-                                    >
-                                        {Array.from({ length: rotationWeeks }, (_, i) => (
-                                            <option key={i + 1} value={i + 1}>Week {i + 1}</option>
-                                        ))}
-                                    </select>
-                                </div>
-                                <div>
-                                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Day</label>
-                                    <select
-                                        value={leaveData.day}
-                                        onChange={(e) => setLeaveData({ ...leaveData, day: e.target.value })}
-                                        className={`w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-teal-500 outline-none ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-100' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
-                                    >
-                                        {DAYS.map(day => (
-                                            <option key={day} value={day}>{day}</option>
-                                        ))}
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div className="flex gap-3 mt-8">
-                                <button
-                                    onClick={markLeave}
-                                    className="flex-1 px-6 py-3 bg-red-500 text-white rounded-xl font-semibold shadow-lg shadow-red-500/30 hover:shadow-red-500/50 hover:-translate-y-0.5 transition-all active:scale-95"
-                                >
-                                    Confirm Leave
-                                </button>
-                                <button
-                                    onClick={() => setShowLeaveModal(false)}
-                                    className={`px-6 py-3 rounded-xl font-semibold transition-all ${isDarkMode ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-                                >
-                                    Cancel
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* Department Creation Modal */}
-            {showDeptModal && (
-                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[60] transition-all p-4">
-                    <motion.div
-                        initial={{ opacity: 0, scale: 0.95, y: 20 }}
-                        animate={{ opacity: 1, scale: 1, y: 0 }}
-                        className={`rounded-3xl p-8 w-full max-w-2xl shadow-2xl border ring-1 ring-black/5 flex flex-col max-h-[90vh] overflow-hidden ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-white/20'}`}
-                    >
-                        <div className="flex items-center justify-between mb-8">
-                            <h3 className={`text-3xl font-black tracking-tighter flex items-center gap-3 ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>
-                                <div className={`p-3 rounded-2xl shadow-sm ${isDarkMode ? 'bg-slate-800' : 'bg-indigo-50'}`}>
-                                    <Settings2 className="text-indigo-600" size={28} />
-                                </div>
-                                New Department
-                            </h3>
-                            <button onClick={() => setShowDeptModal(false)} className={`p-2 rounded-full transition-colors ${isDarkMode ? 'bg-slate-800 text-slate-400 hover:bg-slate-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
-                                <X size={20} />
-                            </button>
-                        </div>
-
-                        <div className="space-y-6 overflow-y-auto custom-scrollbar pr-2 flex-1">
-                            {/* Department Info */}
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div>
-                                    <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2">Department Name</label>
+                                    <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">Start Month/Date</label>
                                     <input
-                                        type="text"
-                                        value={newDeptName}
-                                        onChange={(e) => setNewDeptName(e.target.value)}
-                                        placeholder="e.g. Production Line 1"
-                                        className={`w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none font-bold ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-100 placeholder:text-slate-500' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
+                                        type="date"
+                                        value={allowanceRange.start}
+                                        onChange={(e) => setAllowanceRange({ ...allowanceRange, start: e.target.value })}
+                                        className={`w-full px-4 py-2 rounded-xl border font-bold ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
                                     />
                                 </div>
                                 <div>
-                                    <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2">Category</label>
-                                    <select
-                                        value={newDeptType}
-                                        onChange={(e) => setNewDeptType(e.target.value)}
-                                        className={`w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none font-bold ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-100' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
+                                    <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">End Month/Date</label>
+                                    <input
+                                        type="date"
+                                        value={allowanceRange.end}
+                                        onChange={(e) => setAllowanceRange({ ...allowanceRange, end: e.target.value })}
+                                        className={`w-full px-4 py-2 rounded-xl border font-bold ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="space-y-3 max-h-[40vh] overflow-y-auto custom-scrollbar pr-2 mb-6">
+                                <table className="w-full text-left border-collapse">
+                                    <thead>
+                                        <tr className={`border-b ${isDarkMode ? 'border-slate-800' : 'border-slate-100'}`}>
+                                            <th className="py-2 text-[10px] font-black uppercase text-slate-400">Employee</th>
+                                            <th className="py-2 text-[10px] font-black uppercase text-slate-400 text-center">Nights (C)</th>
+                                            <th className="py-2 text-[10px] font-black uppercase text-slate-400 text-center">Weekends</th>
+                                            <th className="py-2 text-[10px] font-black uppercase text-slate-400 text-center">Total</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {calculateAllowanceStats().map(s => (
+                                            <tr key={s.name} className={`border-b last:border-0 ${isDarkMode ? 'border-slate-800/50' : 'border-slate-50'}`}>
+                                                <td className={`py-3 font-bold text-sm ${isDarkMode ? 'text-slate-300' : 'text-slate-700'}`}>{s.name}</td>
+                                                <td className="py-3 text-center">
+                                                    <span className={`px-2 py-1 rounded-lg font-black text-xs ${isDarkMode ? 'bg-violet-900/30 text-violet-400' : 'bg-violet-50 text-violet-600'}`}>{s.night}</span>
+                                                </td>
+                                                <td className="py-3 text-center">
+                                                    <span className={`px-2 py-1 rounded-lg font-black text-xs ${isDarkMode ? 'bg-orange-900/30 text-orange-400' : 'bg-orange-50 text-orange-600'}`}>{s.weekend}</span>
+                                                </td>
+                                                <td className="py-3 text-center font-black text-sm text-teal-500">{s.total}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <div className="flex justify-between items-center bg-slate-100/50 dark:bg-slate-800/50 p-4 rounded-2xl">
+                                <div className="text-[10px] font-bold text-slate-400 italic">
+                                    * Calculated based on current schedule dates within range
+                                </div>
+                                <div className="flex gap-3">
+                                    <button
+                                        onClick={() => downloadAllowanceExcel(calculateAllowanceStats())}
+                                        className="flex items-center gap-2 px-6 py-2.5 bg-green-600 text-white rounded-xl font-bold hover:bg-green-700 transition-all shadow-lg shadow-green-600/20 active:scale-95"
                                     >
-                                        <option value="General">General / Office</option>
-                                        <option value="MES">MES / Production (Shift Based)</option>
-                                        <option value="24/7">24/7 Support</option>
-                                        <option value="Custom">Custom Operations</option>
+                                        <FileSpreadsheet size={16} /> Export Detailed Excel
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
+
+            {/* Leave Modal */}
+            {
+                showLeaveModal && (
+                    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 transition-all">
+                        <div className={`rounded-3xl p-8 w-[28rem] shadow-2xl border ring-1 ring-black/5 ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-white/20'}`}>
+                            <h3 className={`text-2xl font-bold mb-6 flex items-center gap-3 ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>
+                                <div className={`p-3 rounded-2xl ${isDarkMode ? 'bg-slate-800' : 'bg-red-50'}`}>
+                                    <UserX className="text-red-500" size={24} />
+                                </div>
+                                Mark Leave
+                            </h3>
+
+                            <div className="space-y-5">
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Employee</label>
+                                    <select
+                                        value={leaveData.employee}
+                                        onChange={(e) => setLeaveData({ ...leaveData, employee: e.target.value })}
+                                        className={`w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none font-medium ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-100' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
+                                    >
+                                        <option value="">Select Employee</option>
+                                        {employees.map(emp => (
+                                            <option key={emp.id} value={emp.id}>
+                                                {emp.name} (Shift {emp.shift})
+                                            </option>
+                                        ))}
                                     </select>
                                 </div>
-                            </div>
 
-                            <div className={`border-t pt-6 ${isDarkMode ? 'border-slate-800' : 'border-slate-100'}`}>
-                                <h4 className={`text-sm font-black uppercase tracking-wide mb-4 flex items-center gap-2 ${isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>
-                                    <ShieldCheck size={16} className="text-teal-500" /> Rota Configuration Checklist
-                                </h4>
-
-                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                    <div className={`p-4 rounded-2xl border transition-all cursor-pointer group ${isDarkMode ? 'bg-slate-800 border-slate-700 hover:border-teal-500/50' : 'bg-slate-50 border-slate-200 hover:border-teal-400'}`}>
-                                        <div className="text-xs font-bold text-slate-400 uppercase mb-1">Shift Pattern</div>
-                                        <div className={`font-black text-lg group-hover:text-teal-500 transition-colors ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>3-Shift / 2-Shift</div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Week</label>
+                                        <select
+                                            value={leaveData.week}
+                                            onChange={(e) => setLeaveData({ ...leaveData, week: parseInt(e.target.value) })}
+                                            className={`w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-100' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
+                                        >
+                                            {Array.from({ length: rotationWeeks }, (_, i) => (
+                                                <option key={i + 1} value={i + 1}>Week {i + 1}</option>
+                                            ))}
+                                        </select>
                                     </div>
-                                    <div className={`p-4 rounded-2xl border transition-all cursor-pointer group ${isDarkMode ? 'bg-slate-800 border-slate-700 hover:border-teal-500/50' : 'bg-slate-50 border-slate-200 hover:border-teal-400'}`}>
-                                        <div className="text-xs font-bold text-slate-400 uppercase mb-1">Rotation</div>
-                                        <div className={`font-black text-lg group-hover:text-teal-500 transition-colors ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>Weekly / Bi-Weekly</div>
-                                    </div>
-                                    <div className={`p-4 rounded-2xl border transition-all cursor-pointer group ${isDarkMode ? 'bg-slate-800 border-slate-700 hover:border-teal-500/50' : 'bg-slate-50 border-slate-200 hover:border-teal-400'}`}>
-                                        <div className="text-xs font-bold text-slate-400 uppercase mb-1">Fairness</div>
-                                        <div className={`font-black text-lg group-hover:text-teal-500 transition-colors ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>Auto-Balancing</div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Day</label>
+                                        <select
+                                            value={leaveData.day}
+                                            onChange={(e) => setLeaveData({ ...leaveData, day: e.target.value })}
+                                            className={`w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-teal-500 outline-none ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-100' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
+                                        >
+                                            {DAYS.map(day => (
+                                                <option key={day} value={day}>{day}</option>
+                                            ))}
+                                        </select>
                                     </div>
                                 </div>
 
-                                <div className={`mt-4 p-4 rounded-2xl border ${isDarkMode ? 'bg-indigo-900/20 border-indigo-500/30' : 'bg-indigo-50 border-indigo-100/50'}`}>
-                                    <p className={`text-xs leading-relaxed font-medium ${isDarkMode ? 'text-indigo-300' : 'text-indigo-800'}`}>
-                                        <span className="font-bold block mb-1">🚀 Advanced Rota Engine Active</span>
-                                        This department will inherit our Smart Scheduling Algorithm. It automatically handles shift rotations (e.g., Morning → Afternoon → Night), ensures fair weekend distribution, and validates rest periods to prevent burnout. You can customize specific rules after creation.
-                                    </p>
+                                <div className="flex gap-3 mt-8">
+                                    <button
+                                        onClick={markLeave}
+                                        className="flex-1 px-6 py-3 bg-red-500 text-white rounded-xl font-semibold shadow-lg shadow-red-500/30 hover:shadow-red-500/50 hover:-translate-y-0.5 transition-all active:scale-95"
+                                    >
+                                        Confirm Leave
+                                    </button>
+                                    <button
+                                        onClick={() => setShowLeaveModal(false)}
+                                        className={`px-6 py-3 rounded-xl font-semibold transition-all ${isDarkMode ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                                    >
+                                        Cancel
+                                    </button>
                                 </div>
                             </div>
                         </div>
+                    </div>
+                )
+            }
 
-                        <div className={`mt-8 pt-6 border-t flex items-center justify-end gap-3 ${isDarkMode ? 'border-slate-800' : 'border-slate-100'}`}>
-                            <button
-                                onClick={() => setShowDeptModal(false)}
-                                className={`px-6 py-3 border rounded-xl font-bold transition-all ${isDarkMode ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={addNewDepartment}
-                                className="px-8 py-3 bg-gradient-to-r from-indigo-600 to-violet-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 hover:-translate-y-0.5 transition-all flex items-center gap-2"
-                            >
-                                <Plus size={18} />
-                                Create Department
-                            </button>
-                        </div>
-                    </motion.div>
-                </div>
-            )}
+            {/* Department Creation Modal */}
+            {
+                showDeptModal && (
+                    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[60] transition-all p-4">
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            className={`rounded-3xl p-8 w-full max-w-2xl shadow-2xl border ring-1 ring-black/5 flex flex-col max-h-[90vh] overflow-hidden ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-white/20'}`}
+                        >
+                            <div className="flex items-center justify-between mb-8">
+                                <h3 className={`text-3xl font-black tracking-tighter flex items-center gap-3 ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>
+                                    <div className={`p-3 rounded-2xl shadow-sm ${isDarkMode ? 'bg-slate-800' : 'bg-indigo-50'}`}>
+                                        <Settings2 className="text-indigo-600" size={28} />
+                                    </div>
+                                    New Department
+                                </h3>
+                                <button onClick={() => setShowDeptModal(false)} className={`p-2 rounded-full transition-colors ${isDarkMode ? 'bg-slate-800 text-slate-400 hover:bg-slate-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                                    <X size={20} />
+                                </button>
+                            </div>
+
+                            <div className="space-y-6 overflow-y-auto custom-scrollbar pr-2 flex-1">
+                                {/* Department Info */}
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div>
+                                        <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2">Department Name</label>
+                                        <input
+                                            type="text"
+                                            value={newDeptName}
+                                            onChange={(e) => setNewDeptName(e.target.value)}
+                                            placeholder="e.g. Production Line 1"
+                                            className={`w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none font-bold ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-100 placeholder:text-slate-500' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2">Category</label>
+                                        <select
+                                            value={newDeptType}
+                                            onChange={(e) => setNewDeptType(e.target.value)}
+                                            className={`w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none font-bold ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-100' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
+                                        >
+                                            <option value="General">General / Office</option>
+                                            <option value="MES">MES / Production (Shift Based)</option>
+                                            <option value="24/7">24/7 Support</option>
+                                            <option value="Custom">Custom Operations</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div className={`border-t pt-6 ${isDarkMode ? 'border-slate-800' : 'border-slate-100'}`}>
+                                    <h4 className={`text-sm font-black uppercase tracking-wide mb-4 flex items-center gap-2 ${isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>
+                                        <ShieldCheck size={16} className="text-teal-500" /> Rota Configuration Checklist
+                                    </h4>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        <div className={`p-4 rounded-2xl border transition-all cursor-pointer group ${isDarkMode ? 'bg-slate-800 border-slate-700 hover:border-teal-500/50' : 'bg-slate-50 border-slate-200 hover:border-teal-400'}`}>
+                                            <div className="text-xs font-bold text-slate-400 uppercase mb-1">Shift Pattern</div>
+                                            <div className={`font-black text-lg group-hover:text-teal-500 transition-colors ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>3-Shift / 2-Shift</div>
+                                        </div>
+                                        <div className={`p-4 rounded-2xl border transition-all cursor-pointer group ${isDarkMode ? 'bg-slate-800 border-slate-700 hover:border-teal-500/50' : 'bg-slate-50 border-slate-200 hover:border-teal-400'}`}>
+                                            <div className="text-xs font-bold text-slate-400 uppercase mb-1">Rotation</div>
+                                            <div className={`font-black text-lg group-hover:text-teal-500 transition-colors ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>Weekly / Bi-Weekly</div>
+                                        </div>
+                                        <div className={`p-4 rounded-2xl border transition-all cursor-pointer group ${isDarkMode ? 'bg-slate-800 border-slate-700 hover:border-teal-500/50' : 'bg-slate-50 border-slate-200 hover:border-teal-400'}`}>
+                                            <div className="text-xs font-bold text-slate-400 uppercase mb-1">Fairness</div>
+                                            <div className={`font-black text-lg group-hover:text-teal-500 transition-colors ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>Auto-Balancing</div>
+                                        </div>
+                                    </div>
+
+                                    <div className={`mt-4 p-4 rounded-2xl border ${isDarkMode ? 'bg-indigo-900/20 border-indigo-500/30' : 'bg-indigo-50 border-indigo-100/50'}`}>
+                                        <p className={`text-xs leading-relaxed font-medium ${isDarkMode ? 'text-indigo-300' : 'text-indigo-800'}`}>
+                                            <span className="font-bold block mb-1">???? Advanced Rota Engine Active</span>
+                                            This department will inherit our Smart Scheduling Algorithm. It automatically handles shift rotations (e.g., Morning ??? Afternoon ??? Night), ensures fair weekend distribution, and validates rest periods to prevent burnout. You can customize specific rules after creation.
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className={`mt-8 pt-6 border-t flex items-center justify-end gap-3 ${isDarkMode ? 'border-slate-800' : 'border-slate-100'}`}>
+                                <button
+                                    onClick={() => setShowDeptModal(false)}
+                                    className={`px-6 py-3 border rounded-xl font-bold transition-all ${isDarkMode ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={addNewDepartment}
+                                    className="px-8 py-3 bg-gradient-to-r from-indigo-600 to-violet-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 hover:-translate-y-0.5 transition-all flex items-center gap-2"
+                                >
+                                    <Plus size={18} />
+                                    Create Department
+                                </button>
+                            </div>
+                        </motion.div>
+                    </div>
+                )
+            }
 
             <div className="flex h-screen overflow-hidden relative">
                 {/* Sidebar */}
                 <motion.aside
                     initial={{ width: 320 }}
-                    animate={{ 
+                    animate={{
                         width: isSidebarOpen ? 320 : 0
                     }}
-                    transition={{ 
-                        type: "spring", 
-                        stiffness: 350, 
+                    transition={{
+                        type: "spring",
+                        stiffness: 350,
                         damping: 30,
                         mass: 0.7
                     }}
-                    className={`${isDarkMode ? 'bg-slate-900 border-r border-slate-800' : 'bg-white border-r border-slate-200'} z-30 flex flex-col h-screen overflow-hidden relative ${
-                        isSidebarOpen 
-                            ? `${isDarkMode ? 'shadow-[4px_0_20px_rgba(0,0,0,0.4)]' : 'shadow-[4px_0_20px_rgba(0,0,0,0.08)]'}`
-                            : 'shadow-none'
-                    } transition-shadow duration-300`}
+                    className={`${isDarkMode ? 'bg-slate-900 border-r border-slate-800' : 'bg-white border-r border-slate-200'} z-30 flex flex-col h-screen overflow-hidden relative ${isSidebarOpen
+                        ? `${isDarkMode ? 'shadow-[4px_0_20px_rgba(0,0,0,0.4)]' : 'shadow-[4px_0_20px_rgba(0,0,0,0.08)]'}`
+                        : 'shadow-none'
+                        } transition-shadow duration-300`}
                 >
                     {/* Close Button Inside Sidebar */}
                     <motion.button
@@ -2166,11 +2383,10 @@ export default function ROTAScheduler() {
                         initial={{ opacity: 0, scale: 0.9 }}
                         animate={{ opacity: isSidebarOpen ? 1 : 0, scale: isSidebarOpen ? 1 : 0.9 }}
                         transition={{ delay: 0.15, duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
-                        className={`absolute top-4 right-4 p-2 rounded-xl transition-all duration-200 z-50 ${
-                            isDarkMode 
-                                ? 'bg-slate-800/90 text-slate-300 hover:bg-slate-700 hover:text-red-400 hover:scale-110 border border-slate-700/50' 
-                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-red-500 hover:scale-110 border border-slate-200'
-                        } shadow-lg`}
+                        className={`absolute top-4 right-4 p-2 rounded-xl transition-all duration-200 z-50 ${isDarkMode
+                            ? 'bg-slate-800/90 text-slate-300 hover:bg-slate-700 hover:text-red-400 hover:scale-110 border border-slate-700/50'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-red-500 hover:scale-110 border border-slate-200'
+                            } shadow-lg`}
                         title="Close Sidebar"
                     >
                         <ChevronLeft size={18} />
@@ -2182,178 +2398,172 @@ export default function ROTAScheduler() {
                                 initial={{ opacity: 0, x: -15 }}
                                 animate={{ opacity: 1, x: 0 }}
                                 exit={{ opacity: 0, x: -15 }}
-                                transition={{ 
+                                transition={{
                                     duration: 0.25,
                                     delay: 0.1,
                                     ease: [0.4, 0, 0.2, 1]
                                 }}
-                                className="flex-1 flex flex-col overflow-y-auto custom-scrollbar min-w-[320px]"
+                                className="flex-1 flex flex-col overflow-y-auto custom-scrollbar min-w-[270px]"
                             >
-                        <div className="p-6 pb-2">
-                            <h1 className={`text-3xl font-black tracking-tighter flex items-center gap-2 ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>
-                                <img
-                                    src={logo}
-                                    alt="RotaBase Logo"
-                                    className="w-10 h-10 rounded-xl shadow-md object-cover"
-                                />
+                                <div className="p-4 pb-1">
+                                    <h1 className={`text-2xl font-black tracking-tighter flex items-center gap-2 ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>
+                                        <img
+                                            src={logo}
+                                            alt="RotaBase Logo"
+                                            className="w-8 h-8 rounded-lg shadow-sm object-cover"
+                                        />
 
 
 
-                                <span className="sparkle-text">RotaBase</span><span className="text-teal-600">.</span>
-                            </h1>
+                                        <span className="sparkle-text">RotaBase</span><span className="text-teal-600">.</span>
+                                    </h1>
 
-                            {/* Department Switcher */}
-                            <div className="mb-6 space-y-2">
-                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Department</label>
-                                <div className="relative group fancy-card-border rounded-xl">
-                                    <select
-                                        value={activeDeptId}
-                                        onChange={(e) => switchDepartment(e.target.value)}
-                                        className={`w-full pl-4 pr-10 py-3 border rounded-xl font-bold focus:ring-2 focus:ring-teal-500 outline-none appearance-none cursor-pointer transition-all ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700' : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'}`}
+                                    {/* Department Switcher */}
+                                    <div className="mb-4 space-y-1.5">
+                                        <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Department</label>
+                                        <div className="relative group fancy-card-border rounded-xl">
+                                            <select
+                                                value={activeDeptId}
+                                                onChange={(e) => switchDepartment(e.target.value)}
+                                                className={`w-full pl-3 pr-8 py-2.5 border rounded-xl font-bold text-sm focus:ring-2 focus:ring-teal-500 outline-none appearance-none cursor-pointer transition-all ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700' : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'}`}
+                                            >
+                                                {departments.map(dept => (
+                                                    <option key={dept.id} value={dept.id}>{dept.name}</option>
+                                                ))}
+                                            </select>
+                                            <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 group-hover:text-slate-600 pointer-events-none transition-colors" size={16} />
+                                        </div>
+                                        <button
+                                            onClick={() => setShowDeptModal(true)}
+                                            className="w-full py-1.5 flex items-center justify-center gap-1.5 text-[10px] font-bold text-teal-600 hover:text-teal-700 hover:bg-teal-50 rounded-lg transition-all"
+                                        >
+                                            <Plus size={12} /> Add New Department
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Sidebar Footer Controls */}
+                                <div className={`p-4 border-t space-y-2.5 flex-1 overflow-y-auto custom-scrollbar ${isDarkMode ? 'border-slate-800 bg-slate-900/50' : 'border-slate-200/60 bg-slate-50/50'}`}>
+                                    <button
+                                        onClick={assignRotaAutomatically}
+                                        className="w-full px-3 py-2 bg-gradient-to-r from-teal-600 to-emerald-600 text-white rounded-xl shadow-lg shadow-teal-500/20 hover:shadow-teal-500/40 hover:scale-[1.01] transition-all text-xs font-black flex items-center justify-center gap-2 active:scale-95 shimmer-btn"
                                     >
-                                        {departments.map(dept => (
-                                            <option key={dept.id} value={dept.id}>{dept.name}</option>
-                                        ))}
-                                    </select>
-                                    <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 group-hover:text-slate-600 pointer-events-none transition-colors" size={18} />
+                                        <Calendar size={14} />
+                                        Generate {activeDept.name} ROTA
+                                    </button>
+
+                                    <button
+                                        onClick={() => setShowStatsModal(true)}
+                                        className={`w-full px-3 py-2.5 border rounded-xl transition-all text-xs font-bold flex items-center justify-center gap-2 shadow-sm shimmer-btn ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
+                                    >
+                                        <BarChart3 size={16} className="text-teal-500" />
+                                        View Stats & Fairness
+                                    </button>
+
+                                    <div className={`relative flex items-center group transition-all duration-300 rounded-xl border shadow-sm ${isDarkMode ? 'bg-slate-800/50 border-slate-700/50 focus-within:border-orange-500/50 focus-within:bg-slate-800' : 'bg-white border-slate-200/60 focus-within:border-orange-400 focus-within:shadow-md'}`}>
+                                        <div className={`pl-2.5 transition-colors ${isDarkMode ? 'text-slate-500 group-focus-within:text-orange-400' : 'text-slate-400 group-focus-within:text-orange-500'}`}>
+                                            <Mail size={12} strokeWidth={2.5} />
+                                        </div>
+                                        <input
+                                            type="email"
+                                            placeholder="Transport DL Email"
+                                            value={outlookDL}
+                                            onChange={(e) => setOutlookDL(e.target.value)}
+                                            className={`w-full bg-transparent border-none py-2 pr-9 text-[10px] font-bold focus:ring-0 outline-none transition-all ${isDarkMode ? 'text-slate-200 placeholder:text-slate-600' : 'text-slate-700 placeholder:text-slate-300'}`}
+                                        />
+                                        <button
+                                            onClick={shareWithTransport}
+                                            title="Open Outlook Draft"
+                                            className={`absolute right-1 p-1 rounded-lg transition-all active:scale-90 ${isDarkMode ? 'bg-orange-500/10 text-orange-400 hover:bg-orange-500/20' : 'bg-orange-50 text-orange-600 hover:bg-orange-100'}`}
+                                        >
+                                            <Send size={12} strokeWidth={2.5} />
+                                        </button>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button
+                                            onClick={() => setShowLeaveModal(true)}
+                                            className={`px-2 py-2 border rounded-xl transition-all font-bold text-[10px] flex items-center justify-center gap-1.5 shadow-sm ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
+                                        >
+                                            <UserX size={12} className="text-red-500" />
+                                            Leave
+                                        </button>
+                                        <button
+                                            onClick={() => setShowAllowanceModal(true)}
+                                            className={`px-2 py-2 border rounded-xl transition-all font-bold text-[10px] flex items-center justify-center gap-1.5 shadow-sm ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
+                                        >
+                                            <Calculator size={12} className="text-blue-500" />
+                                            Allowance
+                                        </button>
+                                    </div>
+
+                                    <button
+                                        onClick={exportToExcel}
+                                        className={`w-full px-2 py-2 border rounded-xl transition-all font-bold text-[10px] flex items-center justify-center gap-1.5 shadow-sm ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
+                                    >
+                                        <FileSpreadsheet size={12} className="text-green-600" />
+                                        Excel
+                                    </button>
+
+                                    <button
+                                        onClick={exportToPDF}
+                                        className={`w-full px-2 py-2 border rounded-xl transition-all font-bold text-[10px] flex items-center justify-center gap-1.5 shadow-sm ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
+                                    >
+                                        <Download size={12} className="text-slate-500" />
+                                        PDF
+                                    </button>
+
+                                    <div className="flex gap-3 pt-2">
+                                        {/* Sync Status Indicator - Premium */}
+                                        <div className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest backdrop-blur-sm border transition-all duration-300 shadow-lg ${isSyncing
+                                            ? `${isDarkMode ? 'bg-gradient-to-r from-teal-500/20 to-emerald-500/20 text-teal-300 border-teal-500/30 shadow-teal-500/20' : 'bg-gradient-to-r from-teal-50 to-emerald-50 text-teal-600 border-teal-200 shadow-teal-200/50'}`
+                                            : `${isDarkMode ? 'bg-slate-800/60 text-slate-300 border-slate-700/50 shadow-slate-900/50' : 'bg-gradient-to-r from-slate-50 to-slate-100/80 text-slate-500 border-slate-200/60 shadow-slate-200/50'}`
+                                            }`}>
+                                            {isSyncing ? (
+                                                <>
+                                                    <div className={`w-2 h-2 rounded-full ${isDarkMode ? 'bg-teal-400' : 'bg-teal-500'} animate-pulse shadow-lg ${isDarkMode ? 'shadow-teal-400/50' : 'shadow-teal-500/50'}`}></div>
+                                                    <span>Syncing...</span>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Globe size={12} className={isDarkMode ? 'text-slate-400' : 'text-slate-500'} />
+                                                    <span>Saved to Cloud</span>
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className="flex gap-3 mt-1">
+                                        <button
+                                            onClick={undo}
+                                            disabled={historyIndex <= 0}
+                                            className={`flex-1 px-4 py-2.5 rounded-xl font-semibold transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-md active:scale-95 ${isDarkMode
+                                                ? historyIndex <= 0
+                                                    ? 'bg-slate-800/40 text-slate-600 border border-slate-700/50'
+                                                    : 'bg-gradient-to-r from-slate-700 to-slate-800 text-slate-200 border border-slate-600/50 hover:from-slate-600 hover:to-slate-700 hover:shadow-lg hover:shadow-slate-700/30 hover:-translate-y-0.5'
+                                                : historyIndex <= 0
+                                                    ? 'bg-slate-100 text-slate-400 border border-slate-200'
+                                                    : 'bg-gradient-to-r from-slate-200 to-slate-300 text-slate-700 border border-slate-300/60 hover:from-slate-300 hover:to-slate-400 hover:shadow-lg hover:shadow-slate-300/50 hover:-translate-y-0.5'
+                                                }`}
+                                        >
+                                            <Redo2 size={16} className={historyIndex <= 0 ? 'opacity-50' : ''} />
+                                        </button>
+                                        <button
+                                            onClick={redo}
+                                            disabled={historyIndex >= history.length - 1}
+                                            className={`flex-1 px-4 py-2.5 rounded-xl font-semibold transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-md active:scale-95 ${isDarkMode
+                                                ? historyIndex >= history.length - 1
+                                                    ? 'bg-slate-800/40 text-slate-600 border border-slate-700/50'
+                                                    : 'bg-gradient-to-r from-slate-700 to-slate-800 text-slate-200 border border-slate-600/50 hover:from-slate-600 hover:to-slate-700 hover:shadow-lg hover:shadow-slate-700/30 hover:-translate-y-0.5'
+                                                : historyIndex >= history.length - 1
+                                                    ? 'bg-slate-100 text-slate-400 border border-slate-200'
+                                                    : 'bg-gradient-to-r from-slate-200 to-slate-300 text-slate-700 border border-slate-300/60 hover:from-slate-300 hover:to-slate-400 hover:shadow-lg hover:shadow-slate-300/50 hover:-translate-y-0.5'
+                                                }`}
+                                        >
+                                            <Undo2 size={16} className={historyIndex >= history.length - 1 ? 'opacity-50' : ''} />
+                                        </button>
+                                    </div>
                                 </div>
-                                <button
-                                    onClick={() => setShowDeptModal(true)}
-                                    className="w-full py-2 flex items-center justify-center gap-2 text-xs font-bold text-teal-600 hover:text-teal-700 hover:bg-teal-50 rounded-lg transition-all"
-                                >
-                                    <Plus size={14} /> Add New Department
-                                </button>
-                            </div>
-                        </div>
-
-                        {/* Sidebar Footer Controls */}
-                        <div className={`p-6 border-t space-y-3 flex-1 overflow-y-auto custom-scrollbar ${isDarkMode ? 'border-slate-800 bg-slate-900/50' : 'border-slate-200/60 bg-slate-50/50'}`}>
-                            {/* <Mascot isDarkMode={isDarkMode} /> */}
-                            <button
-                                onClick={assignRotaAutomatically}
-                                className="w-full px-4 py-3.5 bg-gradient-to-r from-teal-600 to-emerald-600 text-white rounded-xl shadow-lg shadow-teal-500/30 hover:shadow-teal-500/50 hover:scale-[1.02] transition-all font-semibold flex items-center justify-center gap-2 active:scale-95 shimmer-btn"
-                            >
-                                <Calendar size={18} />
-                                Generate {activeDept.name} ROTA
-                            </button>
-
-                            <button
-                                onClick={() => setShowStatsModal(true)}
-                                className={`w-full px-4 py-3 border rounded-xl transition-all font-medium flex items-center justify-center gap-2 shadow-sm shimmer-btn ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
-                            >
-                                <BarChart3 size={18} className="text-teal-500" />
-                                View Stats & Fairness
-                            </button>
-
-                            <div className={`relative flex items-center group transition-all duration-300 rounded-xl border shadow-sm ${isDarkMode ? 'bg-slate-800/50 border-slate-700/50 focus-within:border-orange-500/50 focus-within:bg-slate-800' : 'bg-white border-slate-200/60 focus-within:border-orange-400 focus-within:shadow-md'}`}>
-                                <div className={`pl-3 pr-2 transition-colors ${isDarkMode ? 'text-slate-500 group-focus-within:text-orange-400' : 'text-slate-400 group-focus-within:text-orange-500'}`}>
-                                    <Mail size={14} strokeWidth={2.5} />
-                                </div>
-                                <input
-                                    type="email"
-                                    placeholder="Transport DL Email"
-                                    value={outlookDL}
-                                    onChange={(e) => setOutlookDL(e.target.value)}
-                                    className={`w-full bg-transparent border-none py-2.5 pr-10 text-[11px] font-bold focus:ring-0 outline-none transition-all ${isDarkMode ? 'text-slate-200 placeholder:text-slate-600' : 'text-slate-700 placeholder:text-slate-300'}`}
-                                />
-                                <button
-                                    onClick={shareWithTransport}
-                                    title="Open Outlook Draft"
-                                    className={`absolute right-1.5 p-1.5 rounded-lg transition-all active:scale-90 ${isDarkMode ? 'bg-orange-500/10 text-orange-400 hover:bg-orange-500/20' : 'bg-orange-50 text-orange-600 hover:bg-orange-100'}`}
-                                >
-                                    <Send size={14} strokeWidth={2.5} />
-                                </button>
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-2">
-                                <button
-                                    onClick={() => setShowLeaveModal(true)}
-                                    className={`px-3 py-2 border rounded-xl transition-all font-bold text-[11px] flex items-center justify-center gap-2 shadow-sm ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
-                                >
-                                    <UserX size={14} className="text-red-500" />
-                                    Leave
-                                </button>
-                                <button
-                                    onClick={() => setShowAllowanceModal(true)}
-                                    className={`px-3 py-2 border rounded-xl transition-all font-bold text-[11px] flex items-center justify-center gap-2 shadow-sm ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
-                                >
-                                    <Calculator size={14} className="text-blue-500" />
-                                    Allowance
-                                </button>
-                            </div>
-
-                            <button
-                                onClick={exportToExcel}
-                                className={`w-full px-3 py-2 border rounded-xl transition-all font-bold text-[11px] flex items-center justify-center gap-2 shadow-sm ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
-                            >
-                                <FileSpreadsheet size={14} className="text-green-600" />
-                                Excel
-                            </button>
-
-
-
-                            <button
-                                onClick={exportToPDF}
-                                className={`w-full px-3 py-2 border rounded-xl transition-all font-bold text-[11px] flex items-center justify-center gap-2 shadow-sm ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
-                            >
-                                <Download size={14} className="text-slate-500" />
-                                PDF
-                            </button>
-
-                            <div className="flex gap-3 pt-2">
-                                {/* Sync Status Indicator - Premium */}
-                                <div className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest backdrop-blur-sm border transition-all duration-300 shadow-lg ${
-                                    isSyncing 
-                                        ? `${isDarkMode ? 'bg-gradient-to-r from-teal-500/20 to-emerald-500/20 text-teal-300 border-teal-500/30 shadow-teal-500/20' : 'bg-gradient-to-r from-teal-50 to-emerald-50 text-teal-600 border-teal-200 shadow-teal-200/50'}`
-                                        : `${isDarkMode ? 'bg-slate-800/60 text-slate-300 border-slate-700/50 shadow-slate-900/50' : 'bg-gradient-to-r from-slate-50 to-slate-100/80 text-slate-500 border-slate-200/60 shadow-slate-200/50'}`
-                                }`}>
-                                    {isSyncing ? (
-                                        <>
-                                            <div className={`w-2 h-2 rounded-full ${isDarkMode ? 'bg-teal-400' : 'bg-teal-500'} animate-pulse shadow-lg ${isDarkMode ? 'shadow-teal-400/50' : 'shadow-teal-500/50'}`}></div>
-                                            <span>Syncing...</span>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <Globe size={12} className={isDarkMode ? 'text-slate-400' : 'text-slate-500'} />
-                                            <span>Saved to Cloud</span>
-                                        </>
-                                    )}
-                                </div>
-                            </div>
-
-                            <div className="flex gap-3 mt-1">
-                                <button
-                                    onClick={undo}
-                                    disabled={historyIndex <= 0}
-                                    className={`flex-1 px-4 py-2.5 rounded-xl font-semibold transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-md active:scale-95 ${
-                                        isDarkMode
-                                            ? historyIndex <= 0
-                                                ? 'bg-slate-800/40 text-slate-600 border border-slate-700/50'
-                                                : 'bg-gradient-to-r from-slate-700 to-slate-800 text-slate-200 border border-slate-600/50 hover:from-slate-600 hover:to-slate-700 hover:shadow-lg hover:shadow-slate-700/30 hover:-translate-y-0.5'
-                                            : historyIndex <= 0
-                                                ? 'bg-slate-100 text-slate-400 border border-slate-200'
-                                                : 'bg-gradient-to-r from-slate-200 to-slate-300 text-slate-700 border border-slate-300/60 hover:from-slate-300 hover:to-slate-400 hover:shadow-lg hover:shadow-slate-300/50 hover:-translate-y-0.5'
-                                    }`}
-                                >
-                                    <Redo2 size={16} className={historyIndex <= 0 ? 'opacity-50' : ''} />
-                                </button>
-                                <button
-                                    onClick={redo}
-                                    disabled={historyIndex >= history.length - 1}
-                                    className={`flex-1 px-4 py-2.5 rounded-xl font-semibold transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-md active:scale-95 ${
-                                        isDarkMode
-                                            ? historyIndex >= history.length - 1
-                                                ? 'bg-slate-800/40 text-slate-600 border border-slate-700/50'
-                                                : 'bg-gradient-to-r from-slate-700 to-slate-800 text-slate-200 border border-slate-600/50 hover:from-slate-600 hover:to-slate-700 hover:shadow-lg hover:shadow-slate-700/30 hover:-translate-y-0.5'
-                                            : historyIndex >= history.length - 1
-                                                ? 'bg-slate-100 text-slate-400 border border-slate-200'
-                                                : 'bg-gradient-to-r from-slate-200 to-slate-300 text-slate-700 border border-slate-300/60 hover:from-slate-300 hover:to-slate-400 hover:shadow-lg hover:shadow-slate-300/50 hover:-translate-y-0.5'
-                                    }`}
-                                >
-                                    <Undo2 size={16} className={historyIndex >= history.length - 1 ? 'opacity-50' : ''} />
-                                </button>
-                            </div>
-                        </div>
                             </motion.div>
                         )}
                     </AnimatePresence>
@@ -2373,11 +2583,10 @@ export default function ROTAScheduler() {
                                         exit={{ opacity: 0, scale: 0.9, x: -10 }}
                                         transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
                                         onClick={() => setIsSidebarOpen(true)}
-                                        className={`p-2.5 border rounded-xl shadow-md transition-all duration-200 hover:scale-105 active:scale-95 ${
-                                            isDarkMode 
-                                                ? 'bg-slate-800 border-slate-700 text-slate-200 hover:text-teal-400 hover:border-teal-500/50 hover:shadow-teal-500/10' 
-                                                : 'bg-white border-slate-200 text-slate-600 hover:text-teal-600 hover:border-teal-400/50 hover:shadow-teal-400/10'
-                                        }`}
+                                        className={`p-2.5 border rounded-xl shadow-md transition-all duration-200 hover:scale-105 active:scale-95 ${isDarkMode
+                                            ? 'bg-slate-800 border-slate-700 text-slate-200 hover:text-teal-400 hover:border-teal-500/50 hover:shadow-teal-500/10'
+                                            : 'bg-white border-slate-200 text-slate-600 hover:text-teal-600 hover:border-teal-400/50 hover:shadow-teal-400/10'
+                                            }`}
                                     >
                                         <ChevronRight size={18} />
                                     </motion.button>
@@ -2446,37 +2655,33 @@ export default function ROTAScheduler() {
 
                             <div className={`flex items-center gap-2 p-1 rounded-xl border transition-all ${isDarkMode ? 'bg-slate-800/50 border-slate-700/50 hover:bg-slate-800' : 'bg-slate-100/80 border-slate-200/50 hover:bg-slate-100'}`}>
                                 <div className={`px-3 py-1 rounded-lg shadow-sm border flex items-center gap-2 text-xs font-bold ${isDarkMode ? 'bg-slate-900 border-slate-700 text-slate-200' : 'bg-white border-slate-100 text-slate-700'}`}>
-                                    <FileSpreadsheet size={14} className="text-purple-500" />
+                                    <Clock size={14} className="text-teal-500" />
                                     Rotation
                                 </div>
                                 <select
                                     value={rotationWeeks}
                                     onChange={(e) => setRotationWeeks(parseInt(e.target.value))}
-                                    className={`bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer pr-8 py-1 ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}
+                                    className={`bg-transparent border-none text-[11px] font-black focus:ring-0 py-0 pr-8 cursor-pointer ${isDarkMode ? 'text-slate-200' : 'text-slate-500'}`}
                                 >
-                                    {[1, 2, 3, 4].map(w => <option key={w} value={w}>{w} {w === 1 ? 'Week' : 'Weeks'}</option>)}
+                                    {[1, 2, 3, 4, 5, 8].map(w => (
+                                        <option key={w} value={w}>{w} Week{w > 1 ? 's' : ''}</option>
+                                    ))}
                                 </select>
                             </div>
 
                             <div className={`flex items-center gap-2 p-1 rounded-xl border transition-all ${isDarkMode ? 'bg-slate-800/50 border-slate-700/50 hover:bg-slate-800' : 'bg-slate-100/80 border-slate-200/50 hover:bg-slate-100'}`}>
                                 <div className={`px-3 py-1 rounded-lg shadow-sm border flex items-center gap-2 text-xs font-bold ${isDarkMode ? 'bg-slate-900 border-slate-700 text-slate-200' : 'bg-white border-slate-100 text-slate-700'}`}>
                                     <Calendar size={14} className="text-pink-500" />
-                                    Current Date
+                                    Starting
                                 </div>
                                 <input
                                     type="date"
-                                    defaultValue={new Date().toISOString().split('T')[0]}
-                                    className="
-    bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer py-1
-    text-slate-700 dark:text-slate-200
-  "
-                                    style={{
-                                        color: '#334155',
-                                        fontWeight: 600,
-                                        filter: isDarkMode ? 'invert(1)' : 'none'
-                                    }}
+                                    defaultValue={startDate}
+                                    onChange={(e) => setStartDate(e.target.value)}
+                                    className={`bg-transparent border-none text-[11px] font-black focus:ring-0 px-2 cursor-pointer 
+                                        ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}
+                                    style={{ color: isDarkMode ? '#e2e8f0' : '#334155' }}
                                 />
-
                             </div>
 
 
@@ -2662,7 +2867,7 @@ export default function ROTAScheduler() {
                                                             Sunday:
                                                         </strong>
                                                         {' '}
-                                                        12-hour shifts (1 from A: 7am–7pm, 1 from B/C: 7pm–7am)
+                                                        12-hour shifts (1 from A: 7am - 7pm, 1 from B/C: 7pm - 7am)
                                                     </p>
                                                 </div>
 
@@ -2722,20 +2927,23 @@ export default function ROTAScheduler() {
                                     const weekStartDate = getDateForCell(weekIndex, 0);
                                     const weekEndDate = getDateForCell(weekIndex, 6);
 
+                                    const weekHeaderStartDate = weekStartDate; // Placeholder for potential adjustment
+                                    const weekHeaderEndDate = weekEndDate;
+
                                     return (
                                         <div key={week} id={`week-${week}`} className={`border-b last:border-b-0 scroll-mt-24 ${isDarkMode ? 'border-slate-800' : 'border-slate-200'}`}>
                                             <div className="bg-[#1e293b] text-white px-4 py-2 flex items-center justify-between">
-                                                <h3 className="text-sm font-black tracking-tight">Week {week} <span className="text-[10px] font-bold opacity-60 ml-2">({formatDate(weekStartDate)} - {formatDate(weekEndDate)})</span></h3>
+                                                <h3 className="text-sm font-black tracking-tight">Week {week} <span className="text-[10px] font-bold opacity-60 ml-2">({formatDate(weekHeaderStartDate)} - {formatDate(weekHeaderEndDate)})</span></h3>
                                                 <div className="text-[10px] font-bold opacity-60 uppercase tracking-widest">
-                                                    {employees.length} employees • {shiftMode} shifts
+                                                    {employees.length} employees & {shiftMode} shifts
                                                 </div>
                                             </div>
 
                                             <div className="overflow-x-auto">
-                                                <table className="w-full border-collapse">
+                                                <table className="w-full border-collapse table-fixed">
                                                     <thead>
-                                                        <tr className={`text-[11px] uppercase tracking-widest text-white ${isDarkMode ? 'bg-slate-950' : 'bg-slate-800'}`}>
-                                                            <th className={`px-4 py-3 text-left font-black border-r w-24 ${isDarkMode ? 'border-slate-800' : 'border-slate-700'}`}>Date</th>
+                                                        <tr className={`text-[10px] uppercase tracking-widest text-white ${isDarkMode ? 'bg-slate-950' : 'bg-slate-800'}`}>
+                                                            <th className={`px-3 py-2 text-left font-black border-r w-[65px] ${isDarkMode ? 'border-slate-800' : 'border-slate-700'}`}>Date</th>
                                                             <th className={`px-4 py-3 text-center font-black border-r ${isDarkMode ? 'border-slate-800' : 'border-slate-700'}`}>
                                                                 <div className="flex items-center justify-center gap-2">
                                                                     <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></span>
@@ -2793,7 +3001,7 @@ export default function ROTAScheduler() {
                                                                                 }}
                                                                                 onDragOver={(e) => handleDragOver(e, key)}
                                                                                 onDragLeave={handleDragLeave}
-                                                                                className={`px-3 py-2 border-r last:border-r-0 transition-all cursor-pointer relative group-hover:bg-opacity-50 drag-target-cell ${isDarkMode ? 'border-slate-800' : 'border-slate-200'} 
+                                                                                className={`px-2 py-1.5 border-r last:border-r-0 cursor-pointer relative group-hover:bg-opacity-50 drag-target-cell ${isDarkMode ? 'border-slate-800' : 'border-slate-200'} 
                                                                             ${dragOverKey === key ? 'drag-over-active' : ''}
                                                                             ${error?.type === 'error' ? 'bg-red-50 ring-1 ring-red-500 ring-inset' :
                                                                                         error?.type === 'warning' ? 'bg-amber-50/30 conflict-pulse' :
@@ -2812,22 +3020,21 @@ export default function ROTAScheduler() {
                                                                                 ) : (
                                                                                     <div className="min-h-[44px] flex flex-col justify-center">
                                                                                         <div className="flex flex-wrap gap-1 mb-1">
-                                                                                            <AnimatePresence mode='popLayout'>
+                                                                                            <AnimatePresence>
                                                                                                 {cell.employees.filter(Boolean).map(emp => {
                                                                                                     const liveEmp = employees.find(e => e.id === emp.id) || emp;
                                                                                                     return (
                                                                                                         <motion.div
-                                                                                                            layout
                                                                                                             initial={{ opacity: 0, scale: 0.8 }}
                                                                                                             animate={{ opacity: 1, scale: 1 }}
-                                                                                                            exit={{ opacity: 0, scale: 0, transition: { duration: 0.2 } }}
+                                                                                                            exit={{ opacity: 0, scale: 0.5, transition: { duration: 0.15 } }}
                                                                                                             key={liveEmp.id}
-                                                                                                            className={`group/tag relative px-2 py-0.5 rounded-full text-[10px] font-black text-white shadow-sm ring-1 ring-black/5 flex items-center gap-1 pr-1 cursor-default transition-all duration-200 ${selectedSwap?.employee?.id === liveEmp.id ? 'ring-2 ring-white ring-offset-1 animate-pulse' : ''}`}
+                                                                                                            className={`group/tag relative px-2 h-[22px] rounded-full text-[10px] font-black text-white shadow-sm ring-1 ring-black/5 flex items-center cursor-default transition-all duration-300 ${selectedSwap?.employee?.id === liveEmp.id ? 'ring-2 ring-white ring-offset-1 animate-pulse' : ''}`}
                                                                                                             style={{ backgroundColor: liveEmp.color }}
-                                                                                                            onClick={(e) => e.stopPropagation()} // Prevent cell click/drag issues
+                                                                                                            onClick={(e) => e.stopPropagation()}
                                                                                                         >
                                                                                                             <span className="flex-shrink-0">{liveEmp.name}</span>
-                                                                                                            <div className="flex items-center gap-0.5 ml-1 overflow-hidden transition-all duration-200 ease-out opacity-0 max-w-0 group-hover/tag:opacity-100 group-hover/tag:max-w-[40px] pointer-events-none group-hover/tag:pointer-events-auto" style={{ willChange: 'max-width, opacity' }}>
+                                                                                                            <div className="flex items-center gap-0.5 overflow-hidden transition-all duration-300 ease-in-out opacity-0 w-0 group-hover/tag:opacity-100 group-hover/tag:w-[42px] group-hover/tag:ml-1.5 pointer-events-none group-hover/tag:pointer-events-auto">
                                                                                                                 <button
                                                                                                                     onClick={(e) => {
                                                                                                                         e.stopPropagation();
@@ -2944,10 +3151,10 @@ export default function ROTAScheduler() {
                                     <div className={`p-1.5 rounded-lg ${isDarkMode ? 'bg-slate-800' : 'bg-blue-50'}`}><AlertCircle size={16} className="text-blue-600" /></div>
                                     How to Use:
                                 </strong>
-                                <ul className="space-y-2 ml-2 list-none">
+                                <ul className="space-y-2 ml-2 list-none text-[12px]">
                                     <li className="flex items-start gap-2 before:content-['•'] before:text-blue-400">Drag employees from sidebar to assign shifts</li>
                                     <li className="flex items-start gap-2 before:content-['•'] before:text-blue-400">Click "Auto Generate" for intelligent scheduling</li>
-                                    <li className="flex items-start gap-2 before:content-['•'] before:text-blue-400">Click 🏖️ to mark holidays</li>
+                                    <li className="flex items-start gap-2 before:content-['•'] before:text-blue-400">Click Palm Tree <Palmtree size={10} className="inline mx-1 text-green-500" /> to mark holidays</li>
                                     <li className="flex items-start gap-2 before:content-['•'] before:text-blue-400">Use "Mark Leave" to handle employee absences</li>
                                 </ul>
                             </div>
@@ -2957,7 +3164,7 @@ export default function ROTAScheduler() {
                                     <div className={`p-1.5 rounded-lg ${isDarkMode ? 'bg-slate-800' : 'bg-purple-50'}`}><CheckCircle2 size={16} className="text-purple-600" /></div>
                                     features:
                                 </strong>
-                                <ul className="space-y-2 ml-2 list-none">
+                                <ul className="space-y-2 ml-2 list-none text-[12px]">
                                     <li className="flex items-start gap-2 before:content-['•'] before:text-purple-400">Automatic rotation based on shift rules</li>
                                     <li className="flex items-start gap-2 before:content-['•'] before:text-purple-400">Excel export for easy sharing</li>
                                     <li className="flex items-start gap-2 before:content-['•'] before:text-purple-400">PDF generation for transport department</li>
@@ -2968,6 +3175,63 @@ export default function ROTAScheduler() {
                     </div>
                 </main>
             </div >
+
+            {/* Premium Confirmation Dialog */}
+            <AnimatePresence>
+                {confirmDialog.isOpen && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            onClick={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))}
+                            className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+                        />
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                            className={`relative w-full max-w-md overflow-hidden rounded-3xl border shadow-2xl ${isDarkMode ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'}`}
+                        >
+                            <div className="p-8">
+                                <div className="flex items-center gap-4 mb-6">
+                                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${confirmDialog.type === 'warning' ? 'bg-amber-100 text-amber-600' : 'bg-red-100 text-red-600'}`}>
+                                        <AlertCircle size={24} />
+                                    </div>
+                                    <div>
+                                        <h3 className={`text-xl font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                                            {confirmDialog.title}
+                                        </h3>
+                                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Action Required</div>
+                                    </div>
+                                </div>
+
+                                <p className={`text-sm font-medium leading-relaxed mb-8 ${isDarkMode ? 'text-slate-400' : 'text-slate-600'}`}>
+                                    {confirmDialog.message}
+                                </p>
+
+                                <div className="flex items-center gap-3">
+                                    <button
+                                        onClick={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))}
+                                        className={`flex-1 px-6 py-3 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${isDarkMode ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            playMicroInteraction('pop');
+                                            confirmDialog.onConfirm();
+                                        }}
+                                        className={`flex-1 px-6 py-3 rounded-2xl font-black text-xs uppercase tracking-widest text-white shadow-lg transition-all active:scale-95 ${confirmDialog.type === 'warning' ? 'bg-gradient-to-r from-amber-500 to-orange-600 shadow-orange-500/20' : 'bg-gradient-to-r from-red-500 to-rose-600 shadow-red-500/20'}`}
+                                    >
+                                        Confirm
+                                    </button>
+                                </div>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
 
             <style>{`
         @keyframes slide-in {
