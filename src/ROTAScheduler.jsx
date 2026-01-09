@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react'; // Version 1.1
+import React, { useState, useEffect } from 'react'; // Version 1.1 
 import { Calendar, Users, Download, FileSpreadsheet, Undo2, Redo2, Plus, Trash2, Clock, AlertCircle, CheckCircle2, UserX, Palmtree, Send, BarChart3, Smartphone, ChevronDown, ChevronUp, Briefcase, Settings2, ShieldCheck, X, ChevronLeft, ChevronRight, Sun, Moon, Sparkles, ArrowLeftRight, FileSearch, Globe, Calculator, Wallet, Mail, Grab } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 import { databases, account, DATABASE_ID, COLLECTIONS } from './lib/appwrite';
 import { ID, Query } from 'appwrite';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useMotionValue, useSpring as useFramerSpring } from 'framer-motion';
 import confetti from 'canvas-confetti';
 import logo from "./assets/logo.png";
 
@@ -223,23 +223,41 @@ export default function ROTAScheduler() {
         type: 'warning' // 'warning', 'danger', 'info'
     });
 
-    // --- Mouse Tracking for Glowing Cursor & Drag Preview ---
-    const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+    const [scrolled, setScrolled] = useState(false);
+    const [isFloatingTeamOpen, setIsFloatingTeamOpen] = useState(false);
+
+    // --- High Performance Mouse Tracking (No Re-renders) ---
+    const mouseX = useMotionValue(0);
+    const mouseY = useMotionValue(0);
+    
+    // Very responsive spring for the drag preview - high stiffness, high damping
+    const springX = useFramerSpring(mouseX, { damping: 30, stiffness: 500, mass: 0.1 });
+    const springY = useFramerSpring(mouseY, { damping: 30, stiffness: 500, mass: 0.1 });
+
     useEffect(() => {
-        const handleMouseMove = (e) => {
-            setMousePos({ x: e.clientX, y: e.clientY });
+        const handleMove = (e) => {
+            mouseX.set(e.clientX);
+            mouseY.set(e.clientY);
         };
-        const handleDragOver = (e) => {
-            // Necessary to update position during native HTML5 drag
-            setMousePos({ x: e.clientX, y: e.clientY });
+        const handleDrag = (e) => {
+            if (e.clientX === 0 && e.clientY === 0) return; // Ignore end of drag resets
+            mouseX.set(e.clientX);
+            mouseY.set(e.clientY);
         };
-        window.addEventListener('mousemove', handleMouseMove);
-        window.addEventListener('dragover', handleDragOver);
+        const handleDragEndGlobal = () => {
+            setDraggedEmployee(null);
+        };
+        window.addEventListener('mousemove', handleMove);
+        window.addEventListener('drag', handleDrag);
+        window.addEventListener('dragover', handleDrag); // Crucial for native drag sync
+        window.addEventListener('dragend', handleDragEndGlobal);
         return () => {
-            window.removeEventListener('mousemove', handleMouseMove);
-            window.removeEventListener('dragover', handleDragOver);
+            window.removeEventListener('mousemove', handleMove);
+            window.removeEventListener('drag', handleDrag);
+            window.removeEventListener('dragover', handleDrag);
+            window.removeEventListener('dragend', handleDragEndGlobal);
         };
-    }, []);
+    }, [mouseX, mouseY]);
 
     // Micro-Audio Helper
     const playMicroInteraction = (type = 'pop') => {
@@ -780,6 +798,48 @@ export default function ROTAScheduler() {
         return errors;
     };
 
+    // Predictive Conflict Checker for Drag & Drop
+    const checkPotentialConflict = (emp, targetWeek, targetDay, targetShift) => {
+        if (!emp) return null;
+
+        // 1. Double Booking Check (Same Day)
+        const dayShifts = ['A', 'B', 'C'].filter(s => {
+            const key = `${targetWeek}-${targetDay}-${s}`;
+            return schedule[key]?.employees?.some(e => e.id === emp.id);
+        });
+        
+        // If dragging to a shift where they ALREADY are, ignore
+        if (dayShifts.includes(targetShift)) return 'existing';
+        if (dayShifts.length > 0) return 'error'; // Already working another shift today
+
+        // 2. Rest Violation Check (C -> Next Day A)
+        if (targetShift === 'C') {
+            let nextWeek = targetWeek;
+            let nextDayIndex = DAYS.indexOf(targetDay) + 1;
+            if (nextDayIndex >= 7) { nextDayIndex = 0; nextWeek++; }
+            
+            if (nextWeek <= rotationWeeks) {
+                const nextDayName = DAYS[nextDayIndex];
+                const nextKeyA = `${nextWeek}-${nextDayName}-A`;
+                if (schedule[nextKeyA]?.employees?.some(e => e.id === emp.id)) return 'warning';
+            }
+        }
+
+        if (targetShift === 'A') {
+            let prevWeek = targetWeek;
+            let prevDayIndex = DAYS.indexOf(targetDay) - 1;
+            if (prevDayIndex < 0) { prevDayIndex = 6; prevWeek--; }
+
+            if (prevWeek >= 1) {
+                const prevDayName = DAYS[prevDayIndex];
+                const prevKeyC = `${prevWeek}-${prevDayName}-C`;
+                if (schedule[prevKeyC]?.employees?.some(e => e.id === emp.id)) return 'warning';
+            }
+        }
+
+        return 'safe';
+    };
+
     // Calculate errors on every render for UI feedback
     const scheduleErrors = validateSchedule();
 
@@ -1074,6 +1134,7 @@ export default function ROTAScheduler() {
 
         setSchedule(newSchedule);
         saveToHistory(newSchedule);
+        setDraggedEmployee(null);
         playMicroInteraction('pop');
         if (navigator.vibrate) navigator.vibrate(10);
     };
@@ -1083,9 +1144,7 @@ export default function ROTAScheduler() {
         if (dragOverKey !== key) setDragOverKey(key);
     };
 
-    const handleDragLeave = () => {
-        setDragOverKey(null);
-    };
+    const handleDragLeave = () => setDragOverKey(null);
 
     const toggleHoliday = (week, day) => {
         const newSchedule = { ...schedule };
@@ -2477,20 +2536,17 @@ export default function ROTAScheduler() {
                     <motion.div
                         className="pointer-events-none fixed z-[9999] flex items-center gap-2 px-3 py-1.5 rounded-xl border shadow-[0_8px_30px_rgb(0,0,0,0.4)] backdrop-blur-xl"
                         style={{
-                            left: 0,
-                            top: 0,
+                            x: springX,
+                            y: springY,
+                            left: 15,
+                            top: 15,
                             backgroundColor: `${draggedEmployee.color}30`,
                             borderColor: draggedEmployee.color,
                         }}
-                        initial={{ opacity: 0, scale: 0.8, x: mousePos.x, y: mousePos.y }}
-                        animate={{ 
-                            opacity: 1, 
-                            scale: 1.05,
-                            x: mousePos.x + 15,
-                            y: mousePos.y + 15,
-                        }}
+                        initial={{ opacity: 0, scale: 0.8 }}
+                        animate={{ opacity: 1, scale: 1.05 }}
                         exit={{ opacity: 0, scale: 0.8 }}
-                        transition={{ type: "spring", damping: 20, stiffness: 300, mass: 0.5 }}
+                        transition={{ duration: 0.2 }}
                     >
                         <div 
                             className="w-5 h-5 rounded-full flex items-center justify-center text-white font-black text-[10px] shadow-sm"
@@ -2508,16 +2564,15 @@ export default function ROTAScheduler() {
                 {isDarkMode && (
                     <motion.div
                         className="pointer-events-none fixed inset-0 z-[9999] mix-blend-screen"
-                        animate={{
-                            x: mousePos.x - 200,
-                            y: mousePos.y - 200
+                        style={{
+                            x: mouseX,
+                            y: mouseY,
+                            left: -200,
+                            top: -200
                         }}
-                        transition={{
-                            type: "spring",
-                            damping: 25,
-                            stiffness: 150,
-                            mass: 0.5
-                        }}
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
                     >
                         <div className="w-[400px] h-[400px] bg-teal-500/15 rounded-full blur-[120px] shadow-[0_0_120px_rgba(20,184,166,0.15)]" />
                     </motion.div>
@@ -2850,7 +2905,16 @@ export default function ROTAScheduler() {
                         </div>
                     </div>
 
-                    <div className="flex-1 overflow-auto p-3 lg:p-4 custom-scrollbar scroll-smooth">
+                    <div 
+                        onScroll={(e) => {
+                            const top = e.target.scrollTop;
+                            // Extreme hysteresis to kill blinking: 
+                            // Hide late (200px), Show early/only-at-top (20px)
+                            if (top > 200 && !scrolled) setScrolled(true);
+                            if (top < 20 && scrolled) setScrolled(false);
+                        }}
+                        className="flex-1 overflow-auto p-3 lg:p-4 custom-scrollbar scroll-smooth"
+                    >
                         {/* Week Navigation bar */}
                         <div className={`sticky top-0 z-30 mb-4 flex items-center gap-2 p-1 rounded-2xl border backdrop-blur-md shadow-lg ${isDarkMode ? 'bg-slate-900/80 border-slate-700/50' : 'bg-white/80 border-slate-200/60'}`}>
                             <div className="px-2 py-0.5 text-[9px] font-black text-slate-400 uppercase tracking-widest border-r border-slate-700/20 mr-1">Quick Nav</div>
@@ -2864,460 +2928,351 @@ export default function ROTAScheduler() {
                                 </a>
                             ))}
                         </div>
-                        <div className={`mb-4 p-3 rounded-2xl border shadow-sm ${isDarkMode ? 'bg-slate-800/40 border-slate-700/50' : 'bg-white/50 border-slate-200/60'}`}>
-                            <h3 className="font-bold text-xs text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2">
-                                <div className={`w-6 h-6 rounded flex items-center justify-center ${isDarkMode ? 'bg-slate-700' : 'bg-teal-100'}`}><Users size={12} className="text-teal-600" /></div>
-                                Team Members <span className="text-slate-300 font-normal">({employees.length})</span>
-                            </h3>
+                        <AnimatePresence>
+                            {!scrolled && (
+                                <motion.div 
+                                    key="inline-team-card"
+                                    initial={{ opacity: 0, scale: 0.98, height: 0, marginBottom: 0 }}
+                                    animate={{ 
+                                        opacity: 1, 
+                                        scale: 1, 
+                                        height: 'auto', 
+                                        marginBottom: 16,
+                                        transition: {
+                                            height: { duration: 0.3, ease: [0.4, 0, 0.2, 1] },
+                                            opacity: { duration: 0.2, delay: 0.1 },
+                                            scale: { duration: 0.2, delay: 0.1 }
+                                        }
+                                    }}
+                                    exit={{ 
+                                        opacity: 0, 
+                                        scale: 0.98,
+                                        height: 0,
+                                        marginBottom: 0,
+                                        transition: { 
+                                            height: { duration: 0.25, ease: "easeIn" },
+                                            opacity: { duration: 0.15 },
+                                            scale: { duration: 0.15 }
+                                        } 
+                                    }}
+                                    className={`sticky top-[52px] z-20 p-3 rounded-2xl border shadow-xl backdrop-blur-md overflow-hidden ${isDarkMode ? 'bg-slate-900/95 border-slate-700/50' : 'bg-white/95 border-slate-200/60'}`}
+                                >
+                                    <h3 className="font-bold text-xs text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+                                        <div className={`w-6 h-6 rounded flex items-center justify-center ${isDarkMode ? 'bg-slate-700' : 'bg-teal-100'}`}><Users size={12} className="text-teal-600" /></div>
+                                        Team Members <span className="text-slate-300 font-normal">({employees.length})</span>
+                                    </h3>
 
-                            <div className="relative group/slider px-1">
-                                <div className="flex items-center gap-3 overflow-x-auto pb-4 pt-1 pretty-scrollbar scroll-smooth">
-                                    {employees.map(emp => (
-                                        <div
-                                            key={emp.id}
-                                            draggable
-                                            onDragStart={(e) => handleDragStart(e, emp)}
-                                            onDragEnd={handleDragEnd}
-                                            className={`group pl-1.5 pr-3 py-1.5 rounded-xl border shadow-sm cursor-grab active:cursor-grabbing hover:shadow-md transition-all flex items-center gap-2.5 shrink-0 ${isDarkMode ? 'bg-slate-800 border-slate-700 hover:border-teal-500' : 'bg-white border-slate-200 hover:border-teal-300'}`}
-                                        >
-                                            <div
-                                                className="w-8 h-8 rounded-full flex items-center justify-center text-white font-black text-xs shadow-inner"
-                                                style={{ backgroundColor: emp.color }}
-                                            >
-                                                {emp.name[0]}
-                                            </div>
-                                            <div className="flex-1">
-                                                <div className={`font-bold text-xs leading-none mb-0.5 ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>{emp.name}</div>
-                                                <div className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">Shift {emp.shift}</div>
-                                            </div>
-                                            <button
-                                                onClick={() => removeEmployee(emp.id)}
-                                                className="opacity-0 group-hover:opacity-100 p-1 text-red-500 hover:bg-red-50 rounded transition-all"
-                                            >
-                                                <Trash2 size={12} />
-                                            </button>
-                                        </div>
-                                    ))}
-
-                                    <div className={`h-10 w-[1px] mx-1 shrink-0 ${isDarkMode ? 'bg-slate-700/50' : 'bg-slate-200'}`}></div>
-
-                                    {/* Inline Add Member */}
-                                    <div className={`flex items-center gap-2 pl-2 pr-1 py-1 rounded-xl border min-w-[280px] shrink-0 h-10 ${isDarkMode ? 'bg-slate-900/50 border-slate-700' : 'bg-slate-100 border-slate-200'}`}>
-                                        <input
-                                            type="text"
-                                            placeholder="New Member Name..."
-                                            value={newEmployee.name}
-                                            onChange={(e) =>
-                                                setNewEmployee({ ...newEmployee, name: e.target.value })
-                                            }
-                                            className={`w-full bg-transparent border-none py-2.5 pr-10 text-[11px] font-bold focus:ring-0 outline-none transition-all 
-    ${isDarkMode
-                                                    ? 'text-slate-200 placeholder:text-slate-400'
-                                                    : 'text-slate-700 placeholder:text-slate-500'
-                                                }`}
-                                        />
-
-                                        <div className={`h-5 w-[1px] ${isDarkMode ? 'bg-slate-800' : 'bg-slate-200'}`}></div>
-                                        <select
-                                            value={newEmployee.shift}
-                                            onChange={(e) => setNewEmployee({ ...newEmployee, shift: e.target.value })}
-                                            className={`bg-transparent border-none text-[10px] font-black focus:ring-0 py-0 pr-6 cursor-pointer ${isDarkMode ? 'text-slate-200' : 'text-slate-500'}`}
-                                        >
-                                            {['A', 'B', 'C'].slice(0, shiftMode === '3' ? 3 : 2).map(s => (
-                                                <option key={s} value={s}>Shift {s}</option>
+                                    <div className="relative group/slider px-1">
+                                        <div className="flex items-center gap-3 overflow-x-auto pb-4 pt-1 pretty-scrollbar scroll-smooth">
+                                            {employees.map(emp => (
+                                                <div
+                                                    key={emp.id}
+                                                    draggable
+                                                    onDragStart={(e) => handleDragStart(e, emp)}
+                                                    onDragEnd={handleDragEnd}
+                                                    className={`group pl-1.5 pr-3 py-1.5 rounded-xl border shadow-sm cursor-grab active:cursor-grabbing hover:shadow-md transition-all flex items-center gap-2.5 shrink-0 ${isDarkMode ? 'bg-slate-800 border-slate-700 hover:border-teal-500' : 'bg-white border-slate-200 hover:border-teal-300'}`}
+                                                >
+                                                    <div
+                                                        className="w-8 h-8 rounded-full flex items-center justify-center text-white font-black text-xs shadow-inner"
+                                                        style={{ backgroundColor: emp.color }}
+                                                    >
+                                                        {emp.name[0]}
+                                                    </div>
+                                                    <div className="flex-1">
+                                                        <div className={`font-bold text-xs leading-none mb-0.5 ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>{emp.name}</div>
+                                                        <div className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">Shift {emp.shift}</div>
+                                                    </div>
+                                                    <button
+                                                        onClick={() => removeEmployee(emp.id)}
+                                                        className="opacity-0 group-hover:opacity-100 p-1 text-red-500 hover:bg-red-50 rounded transition-all"
+                                                    >
+                                                        <Trash2 size={12} />
+                                                    </button>
+                                                </div>
                                             ))}
-                                        </select>
-                                        <button
-                                            onClick={addEmployee}
-                                            className="
-                                                    w-8 h-8 shrink-0
-                                                    bg-teal-600 text-white rounded-lg
-                                                    hover:bg-teal-700 transition-all shadow-sm
-                                                    flex items-center justify-center
-                                                    active:scale-95
-                                                "
-                                        >
-                                            <Plus size={16} />
-                                        </button>
 
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
+                                            <div className={`h-10 w-[1px] mx-1 shrink-0 ${isDarkMode ? 'bg-slate-700/50' : 'bg-slate-200'}`}></div>
 
-                        <div className={`mb-4 rounded-2xl border shadow-sm overflow-hidden ${isDarkMode ? 'bg-slate-800/40 border-slate-700/50' : 'bg-white/50 border-slate-200/60'}`}>
-                            <div
-                                className={`
-                                    px-4 py-2 flex items-center justify-between cursor-pointer
-                                    transition-colors
-                                    ${isDarkMode ? 'hover:bg-slate-800' : 'hover:bg-slate-50'}
-                                `}
-                                onClick={() => setShowRules(!showRules)}
-                            >
-                                <h3 className="font-bold text-[11px] text-slate-500 uppercase tracking-widest flex items-center gap-2">
-                                    <div
-                                        className={`w-6 h-6 rounded flex items-center justify-center
-                                            ${isDarkMode ? 'bg-slate-700' : 'bg-teal-100'}
-                                        `}
-                                    >
-                                        <Users size={12} className="text-teal-600" />
-                                    </div>
+                                            {/* Inline Add Member */}
+                                            <div className={`flex items-center gap-2 pl-2 pr-1 py-1 rounded-xl border min-w-[280px] shrink-0 h-10 ${isDarkMode ? 'bg-slate-900/50 border-slate-700' : 'bg-slate-100 border-slate-200'}`}>
+                                                <input
+                                                    type="text"
+                                                    placeholder="New Member Name..."
+                                                    value={newEmployee.name}
+                                                    onChange={(e) =>
+                                                        setNewEmployee({ ...newEmployee, name: e.target.value })
+                                                    }
+                                                    className={`w-full bg-transparent border-none py-2.5 pr-10 text-[11px] font-bold focus:ring-0 outline-none transition-all 
+                            ${isDarkMode
+                                                            ? 'text-slate-200 placeholder:text-slate-400'
+                                                            : 'text-slate-700 placeholder:text-slate-500'
+                                                        }`}
+                                                />
 
-                                    Shift Rules
-                                </h3>
-
-                                {showRules
-                                    ? <ChevronUp className="text-slate-500" />
-                                    : <ChevronDown className="text-slate-500" />
-                                }
-                            </div>
-
-
-                            {showRules && (
-                                <div className="px-6 pb-6 pt-2">
-                                    {activeDept.type === 'MES' ? (
-                                        shiftMode === '3' ? (
-                                            <div className={`grid grid-cols-1 md:grid-cols-2 gap-4 text-sm leading-relaxed font-medium ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>
-                                                <div className="space-y-2">
-                                                    <p>
-                                                        <strong className={isDarkMode ? 'text-pink-300' : 'text-pink-600'}>
-                                                            Mon-Thu:
-                                                        </strong>
-                                                        {' '}
-                                                        2 persons per shift (A, B, C)
-                                                    </p>
-
-                                                    <p>
-                                                        <strong className={isDarkMode ? 'text-pink-300' : 'text-pink-600'}>
-                                                            Friday:
-                                                        </strong>
-                                                        {' '}
-                                                        1 person from each shift works (3 total), 3 OFF
-                                                    </p>
-
-                                                    <p>
-                                                        <strong className={isDarkMode ? 'text-pink-300' : 'text-pink-600'}>
-                                                            Saturday:
-                                                        </strong>
-                                                        {' '}
-                                                        Friday OFF people work, Friday workers OFF
-                                                    </p>
-
-                                                </div>
-                                                <div className="space-y-2">
-                                                    <p>
-                                                        <strong className={isDarkMode ? 'text-pink-300' : 'text-pink-600'}>
-                                                            Sunday:
-                                                        </strong>
-                                                        {' '}
-                                                        12-hour shifts (1 from A: 7am - 7pm, 1 from B/C: 7pm - 7am)
-                                                    </p>
-                                                </div>
-
+                                                <div className={`h-5 w-[1px] ${isDarkMode ? 'bg-slate-800' : 'bg-slate-200'}`}></div>
+                                                <select
+                                                    value={newEmployee.shift}
+                                                    onChange={(e) => setNewEmployee({ ...newEmployee, shift: e.target.value })}
+                                                    className={`bg-transparent border-none text-[10px] font-black focus:ring-0 py-0 pr-6 cursor-pointer ${isDarkMode ? 'text-slate-200' : 'text-slate-500'}`}
+                                                >
+                                                    {['A', 'B', 'C'].slice(0, shiftMode === '3' ? 3 : 2).map(s => (
+                                                        <option key={s} value={s}>Shift {s}</option>
+                                                    ))}
+                                                </select>
+                                                <button
+                                                    onClick={addEmployee}
+                                                    className="
+                                                            w-8 h-8 shrink-0
+                                                            bg-teal-600 text-white rounded-lg
+                                                            hover:bg-teal-700 transition-all shadow-sm
+                                                            flex items-center justify-center
+                                                            active:scale-95
+                                                        "
+                                                >
+                                                    <Plus size={16} />
+                                                </button>
                                             </div>
-                                        ) : (
-                                            <div className={`text-sm space-y-2 font-medium ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>
-                                                <p>
-                                                    <strong className={isDarkMode ? 'text-pink-300' : 'text-pink-600'}>
-                                                        Mon-Thu:
-                                                    </strong>
-                                                    {' '}
-                                                    3 persons per shift (A & B)
-                                                </p>
-
-                                                <p>
-                                                    <strong className={isDarkMode ? 'text-pink-300' : 'text-pink-600'}>
-                                                        Friday:
-                                                    </strong>
-                                                    {' '}
-                                                    2 from each shift work (4 total), 2 OFF
-                                                </p>
-
-                                                <p>
-                                                    <strong className={isDarkMode ? 'text-pink-300' : 'text-pink-600'}>
-                                                        Saturday:
-                                                    </strong>
-                                                    {' '}
-                                                    Different 2 people (Fri workers + 2 Fri OFF get OFF)
-                                                </p>
-
-                                                <p>
-                                                    <strong className={isDarkMode ? 'text-pink-300' : 'text-pink-600'}>
-                                                        Sunday:
-                                                    </strong>
-                                                    {' '}
-                                                    Fri+Sat OFF people work in their shifts
-                                                </p>
-                                            </div>
-
-                                        )
-                                    ) : (
-                                        <div className="text-sm text-slate-600 space-y-2 font-medium">
-                                            <p><strong className="text-slate-800">General Distribution:</strong> Employees are assigned in a balanced round-robin manner.</p>
-                                            <p>Supports any number of employees and ensures equal shift distribution over time.</p>
-                                            <p>No special weekend or holiday constraints are applied by default.</p>
                                         </div>
-                                    )}
+                                    </div>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+
+                        {/* Floating Team Circle (Mobile/Scroll FAB) */}
+                        <AnimatePresence>
+                            {scrolled && (
+                                <div className="fixed bottom-8 right-8 z-[60] flex flex-col items-end gap-3">
+                                    <AnimatePresence mode="wait">
+                                        {isFloatingTeamOpen && (
+                                            <motion.div
+                                                initial={{ opacity: 0, scale: 0.8, y: 20 }}
+                                                animate={{ opacity: 1, scale: 1, y: 0 }}
+                                                exit={{ opacity: 0, scale: 0.8, y: 20 }}
+                                                transition={{ duration: 0.2, ease: "easeOut" }}
+                                                className={`mb-2 p-4 rounded-3xl border shadow-2xl backdrop-blur-xl w-[320px] max-h-[400px] overflow-hidden flex flex-col ${isDarkMode ? 'bg-slate-900/90 border-slate-700' : 'bg-white/90 border-slate-200'}`}
+                                            >
+                                                <div className="flex items-center justify-between mb-4">
+                                                    <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Active Roster Team</span>
+                                                    <button onClick={() => setIsFloatingTeamOpen(false)}><X size={14} className="text-slate-400" /></button>
+                                                </div>
+                                                <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 grid grid-cols-1 gap-2">
+                                                    {employees.map(emp => (
+                                                        <div
+                                                            key={emp.id}
+                                                            draggable
+                                                            onDragStart={(e) => handleDragStart(e, emp)}
+                                                            onDragEnd={handleDragEnd}
+                                                            className={`p-2 rounded-xl border flex items-center gap-3 cursor-grab active:cursor-grabbing transition-all ${isDarkMode ? 'bg-slate-800/50 border-slate-700 hover:border-teal-500' : 'bg-slate-50 border-slate-200 hover:border-teal-400'}`}
+                                                        >
+                                                            <div className="w-6 h-6 rounded-full flex items-center justify-center text-white font-black text-[9px]" style={{ backgroundColor: emp.color }}>
+                                                                {emp.name[0]}
+                                                            </div>
+                                                            <div className="flex-1">
+                                                                <div className={`text-[11px] font-bold leading-none ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>{emp.name}</div>
+                                                                <div className={`text-[8px] font-black uppercase ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>Shift {emp.shift}</div>
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </motion.div>
+                                        )}
+                                    </AnimatePresence>
+                                    
+                                    <motion.button
+                                        initial={{ scale: 0, y: 20, opacity: 0 }}
+                                        animate={{ scale: 1, y: 0, opacity: 1 }}
+                                        exit={{ scale: 0, y: 20, opacity: 0 }}
+                                        transition={{ duration: 0.2, delay: 0.1, ease: "easeOut" }}
+                                        onClick={() => {
+                                            setIsFloatingTeamOpen(!isFloatingTeamOpen);
+                                            playMicroInteraction('pop');
+                                        }}
+                                        className={`w-14 h-14 rounded-full flex items-center justify-center shadow-2xl border-2 transition-all group relative ${isFloatingTeamOpen ? 'bg-red-500 border-red-400 text-white' : 'bg-teal-600 border-teal-400 text-white hover:scale-110 shadow-teal-500/20'}`}
+                                    >
+                                        <AnimatePresence mode="wait">
+                                            <motion.div
+                                                key={isFloatingTeamOpen ? 'close' : 'users'}
+                                                initial={{ rotate: -90, opacity: 0 }}
+                                                animate={{ rotate: 0, opacity: 1 }}
+                                                exit={{ rotate: 90, opacity: 0 }}
+                                                transition={{ duration: 0.15 }}
+                                            >
+                                                {isFloatingTeamOpen ? <X size={24} /> : <Users size={24} />}
+                                            </motion.div>
+                                        </AnimatePresence>
+                                        {!isFloatingTeamOpen && (
+                                            <span className="absolute -top-1 -right-1 bg-white text-teal-600 text-[10px] font-black w-6 h-6 rounded-full flex items-center justify-center border-2 border-teal-600 shadow-sm group-hover:scale-110 transition-transform">
+                                                {employees.length}
+                                            </span>
+                                        )}
+                                    </motion.button>
                                 </div>
                             )}
-                        </div>
+                        </AnimatePresence>
 
-                        {/* Schedule Table */}
+                        {/* Schedule Table Container */}
                         <div className={`rounded-2xl shadow-xl overflow-hidden border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-gray-200'}`}>
-                            {
-                                Array.from({ length: rotationWeeks }, (_, weekIndex) => {
-                                    const week = weekIndex + 1;
-                                    const weekStartDate = getDateForCell(weekIndex, 0);
-                                    const weekEndDate = getDateForCell(weekIndex, 6);
+                            {Array.from({ length: rotationWeeks }, (_, weekIndex) => {
+                                const week = weekIndex + 1;
+                                const weekStartDate = getDateForCell(weekIndex, 0);
+                                const weekEndDate = getDateForCell(weekIndex, 6);
 
-                                    const weekHeaderStartDate = weekStartDate; // Placeholder for potential adjustment
-                                    const weekHeaderEndDate = weekEndDate;
-
-                                    return (
-                                        <div key={week} id={`week-${week}`} className={`border-b last:border-b-0 scroll-mt-24 ${isDarkMode ? 'border-slate-800' : 'border-slate-200'}`}>
-                                            <div className="bg-[#1e293b] text-white px-4 py-2 flex items-center justify-between">
-                                                <h3 className="text-sm font-black tracking-tight">Week {week} <span className="text-[10px] font-bold opacity-60 ml-2">({formatDate(weekHeaderStartDate)} - {formatDate(weekHeaderEndDate)})</span></h3>
-                                                <div className="text-[10px] font-bold opacity-60 uppercase tracking-widest">
-                                                    {employees.length} employees & {shiftMode} shifts
-                                                </div>
-                                            </div>
-
-                                            <div className="overflow-x-auto">
-                                                <table className="w-full border-collapse table-fixed">
-                                                    <thead>
-                                                        <tr className={`text-[10px] uppercase tracking-widest text-white ${isDarkMode ? 'bg-slate-950' : 'bg-slate-800'}`}>
-                                                            <th className={`px-3 py-2 text-left font-black border-r w-[65px] ${isDarkMode ? 'border-slate-800' : 'border-slate-700'}`}>Date</th>
-                                                            <th className={`px-4 py-3 text-center font-black border-r ${isDarkMode ? 'border-slate-800' : 'border-slate-700'}`}>
-                                                                <div className="flex items-center justify-center gap-2">
-                                                                    <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></span>
-                                                                    Shift A
-                                                                </div>
-                                                            </th>
-                                                            <th className={`px-4 py-3 text-center font-black border-r ${isDarkMode ? 'border-slate-800' : 'border-slate-700'}`}>
-                                                                <div className="flex items-center justify-center gap-2">
-                                                                    <span className="w-2 h-2 rounded-full bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.5)]"></span>
-                                                                    Shift B
-                                                                </div>
-                                                            </th>
-                                                            {shiftMode === '3' && (
-                                                                <th className="px-4 py-3 text-center font-black">
-                                                                    <div className="flex items-center justify-center gap-2">
-                                                                        <span className="w-2 h-2 rounded-full bg-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.5)]"></span>
-                                                                        Shift C
-                                                                    </div>
-                                                                </th>
-                                                            )}
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody>
-                                                        {DAYS.map((day, dayIndex) => {
-                                                            const date = getDateForCell(weekIndex, dayIndex);
-                                                            const isToday = formatDate(date) === formatDate(new Date());
-
-                                                            return (
-                                                                <tr key={day} className={`border-t group transition-all duration-200 ${isDarkMode ? 'border-slate-800 hover:bg-slate-800/50' : 'border-slate-200 hover:bg-slate-50'} ${isToday ? 'bg-teal-50/10' : ''}`}>
-                                                                    <td className={`px-3 py-2 border-r ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-white'}`}>
-                                                                        <div className="flex flex-col items-center">
-                                                                            <div className={`text-sm font-black ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>{date.getDate()}</div>
-                                                                            <div className={`text-[10px] font-bold uppercase ${isDarkMode ? 'text-slate-400' : 'text-slate-700'}`}>{date.toLocaleDateString('en-GB', { month: 'short' })}</div>
-                                                                            <div className="text-[9px] font-bold text-slate-400 mt-0.5">{day}</div>
-                                                                            <button
-                                                                                onClick={() => toggleHoliday(week, day)}
-                                                                                className="mt-2 text-slate-300 hover:text-green-500 transition-colors p-1"
-                                                                                title="Mark as holiday"
-                                                                            >
-                                                                                <Palmtree size={12} />
-                                                                            </button>
-                                                                        </div>
-                                                                    </td>
-                                                                    {['A', 'B', 'C'].slice(0, shiftMode === '3' ? 3 : 2).map(shift => {
-                                                                        const key = `${week}-${day}-${shift}`;
-                                                                        const cell = schedule[key] || { employees: [], status: 'normal', note: '' };
-                                                                        const error = scheduleErrors[key];
-
-                                                                        return (
-                                                                            <td
-                                                                                key={shift}
-                                                                                onDrop={(e) => {
-                                                                                    setDragOverKey(null);
-                                                                                    handleDrop(e, week, day, shift);
-                                                                                }}
-                                                                                onDragOver={(e) => handleDragOver(e, key)}
-                                                                                onDragLeave={handleDragLeave}
-                                                                                className={`px-2 py-1.5 border-r last:border-r-0 cursor-pointer relative group-hover:bg-opacity-50 drag-target-cell ${isDarkMode ? 'border-slate-800' : 'border-slate-200'} 
-                                                                            ${dragOverKey === key ? 'drag-over-active' : ''}
-                                                                            ${error?.type === 'error' ? 'bg-red-50 ring-1 ring-red-500 ring-inset' :
-                                                                                        error?.type === 'warning' ? 'bg-amber-50/30 conflict-pulse' :
-                                                                                            cell.status === 'holiday' ? 'bg-green-50/20' :
-                                                                                                cell.status === 'leave' ? 'bg-orange-50/20' :
-                                                                                                    isDarkMode ? 'bg-slate-900/50' : 'bg-white'
-                                                                                    }`}
-                                                                            >
-                                                                                {cell.status === 'holiday' ? (
-                                                                                    <div className="flex flex-col items-center justify-center h-full opacity-80">
-                                                                                        <Palmtree size={16} className="text-green-500 mb-1" />
-                                                                                        <div className="text-[8px] font-bold uppercase tracking-tighter text-green-600 text-center px-1 leading-tight">
-                                                                                            {cell.note || 'Holiday'}
-                                                                                        </div>
-                                                                                    </div>
-                                                                                ) : (
-                                                                                    <div className="min-h-[40px] flex flex-col justify-center">
-                                                                                        <div className="flex flex-wrap gap-1 mb-1">
-                                                                                            <AnimatePresence>
-                                                                                                {cell.employees.filter(Boolean).map(emp => {
-                                                                                                    const liveEmp = employees.find(e => e.id === emp.id) || emp;
-                                                                                                    return (
-                                                                                                        <motion.div
-                                                                                                            initial={{ opacity: 0, scale: 0.8 }}
-                                                                                                            animate={{ opacity: 1, scale: 1 }}
-                                                                                                            exit={{ opacity: 0, scale: 0.5, transition: { duration: 0.15 } }}
-                                                                                                            key={liveEmp.id}
-                                                                                                            className={`group/tag relative px-2 h-[22px] rounded-full text-[10px] font-black text-white shadow-sm ring-1 ring-black/5 flex items-center cursor-default transition-all duration-300 ${selectedSwap?.employee?.id === liveEmp.id ? 'ring-2 ring-white ring-offset-1 animate-pulse' : ''}`}
-                                                                                                            style={{ backgroundColor: liveEmp.color }}
-                                                                                                            onClick={(e) => e.stopPropagation()}
-                                                                                                        >
-                                                                                                            <span className="flex-shrink-0">{liveEmp.name}</span>
-                                                                                                            <div className="flex items-center gap-0.5 overflow-hidden transition-all duration-300 ease-in-out opacity-0 w-0 group-hover/tag:opacity-100 group-hover/tag:w-[42px] group-hover/tag:ml-1.5 pointer-events-none group-hover/tag:pointer-events-auto">
-                                                                                                                <button
-                                                                                                                    onClick={(e) => {
-                                                                                                                        e.stopPropagation();
-                                                                                                                        handleSwapMode(week, day, shift, liveEmp);
-                                                                                                                    }}
-                                                                                                                    className={`rounded-full p-0.5 transition-all flex items-center justify-center w-3.5 h-3.5 flex-shrink-0 ${selectedSwap?.employee?.id === liveEmp.id ? 'bg-white text-black' : 'bg-black/20 hover:bg-black/40'}`}
-                                                                                                                    title="Swap Shift"
-                                                                                                                >
-                                                                                                                    <ArrowLeftRight size={8} strokeWidth={4} />
-                                                                                                                </button>
-                                                                                                                <button
-                                                                                                                    onClick={(e) => {
-                                                                                                                        e.stopPropagation();
-                                                                                                                        removeEmployeeFromCell(week, day, shift, liveEmp.id);
-                                                                                                                    }}
-                                                                                                                    className="bg-black/20 hover:bg-black/40 rounded-full p-0.5 transition-all flex items-center justify-center w-3.5 h-3.5 flex-shrink-0"
-                                                                                                                >
-                                                                                                                    <X size={8} strokeWidth={4} />
-                                                                                                                </button>
-                                                                                                            </div>
-                                                                                                        </motion.div>
-                                                                                                    );
-                                                                                                })}
-                                                                                            </AnimatePresence>
-                                                                                            {cell.employees.length === 0 && cell.status !== 'leave' && (
-                                                                                                <div className={`text-[10px] font-bold italic ${isDarkMode ? 'text-slate-600' : 'text-slate-300'}`}>Drop here</div>
-                                                                                            )}
-                                                                                        </div>
-
-                                                                                        {cell.status === 'leave' && (
-                                                                                            <div className="mt-1 p-1 bg-orange-100 rounded border border-orange-200">
-                                                                                                <div className="text-orange-700 font-bold text-[8px] uppercase">Leave: {cell.note}</div>
-                                                                                            </div>
-                                                                                        )}
-
-                                                                                        {(cell.employees.length < (shiftMode === '3' ? 2 : 3) || cell.status === 'leave') && cell.status !== 'holiday' && (
-                                                                                            <button
-                                                                                                onClick={(e) => {
-                                                                                                    e.stopPropagation();
-                                                                                                    getBestReplacements(week, day, shift);
-                                                                                                }}
-                                                                                                className="mt-1 flex items-center gap-1 text-[8px] font-black text-teal-600 uppercase hover:text-teal-700 transition-colors"
-                                                                                            >
-                                                                                                <Sparkles size={10} /> Suggest
-                                                                                            </button>
-                                                                                        )}
-
-                                                                                        {/* Suggestion Popover */}
-                                                                                        {cellSuggestions?.key === key && (
-                                                                                            <motion.div
-                                                                                                initial={{ opacity: 0, y: 5 }}
-                                                                                                animate={{ opacity: 1, y: 0 }}
-                                                                                                className={`absolute top-full left-0 z-50 w-full min-w-[120px] shadow-2xl border-2 border-teal-500 rounded-xl p-2 mt-1 ${isDarkMode ? 'bg-slate-900' : 'bg-white'}`}
-                                                                                            >
-                                                                                                <div className="flex items-center justify-between mb-2">
-                                                                                                    <span className="text-[9px] font-black uppercase text-teal-500 flex items-center gap-1"><Sparkles size={10} /> Best Matches</span>
-                                                                                                    <button onClick={(e) => { e.stopPropagation(); setCellSuggestions(null); }} className="text-slate-400 hover:text-slate-600"><X size={12} /></button>
-                                                                                                </div>
-                                                                                                <div className="space-y-1.5 pointer-events-auto">
-                                                                                                    {cellSuggestions.list.length > 0 ? cellSuggestions.list.map(sEmp => (
-                                                                                                        <button
-                                                                                                            key={sEmp.id}
-                                                                                                            onClick={(e) => {
-                                                                                                                e.stopPropagation();
-                                                                                                                handleDrop(null, week, day, shift, sEmp);
-                                                                                                                setCellSuggestions(null);
-                                                                                                            }}
-                                                                                                            className={`w-full text-left p-1.5 text-[10px] font-bold rounded-lg flex items-center justify-between transition-colors ${isDarkMode ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-teal-50 text-slate-700'}`}
-                                                                                                        >
-                                                                                                            <div className="flex items-center gap-2">
-                                                                                                                <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: sEmp.color }}></div>
-                                                                                                                {sEmp.name}
-                                                                                                            </div>
-                                                                                                            <div className="text-[8px] opacity-60 font-black">LOAD: {sEmp.workload}</div>
-                                                                                                        </button>
-                                                                                                    )) : (
-                                                                                                        <div className="text-[9px] font-bold text-slate-400 p-2 text-center">No safe replacements found.</div>
-                                                                                                    )}
-                                                                                                </div>
-                                                                                            </motion.div>
-                                                                                        )}
-
-                                                                                        {(cell.note || SHIFTS[shift]?.label) && cell.status !== 'leave' && !error && (
-                                                                                            <div className="text-[9px] font-bold text-slate-400 leading-tight">
-                                                                                                {cell.note || SHIFTS[shift]?.label.split(' ')[1]}
-                                                                                            </div>
-                                                                                        )}
-
-                                                                                        {error && (
-                                                                                            <div className={`mt-1 flex items-center gap-1 font-black text-[9px] uppercase tracking-tighter ${error.type === 'error' ? 'text-red-600' : 'text-amber-600'}`}>
-                                                                                                <AlertCircle size={10} /> {error.message}
-                                                                                            </div>
-                                                                                        )}
-                                                                                    </div>
-                                                                                )}
-                                                                            </td>
-                                                                        );
-                                                                    })}
-                                                                </tr>
-                                                            );
-                                                        })}
-                                                    </tbody>
-                                                </table>
+                                return (
+                                    <div key={`week-${week}`} id={`week-${week}`} className={`border-b last:border-b-0 scroll-mt-24 ${isDarkMode ? 'border-slate-800' : 'border-slate-200'}`}>
+                                        <div className="bg-[#1e293b] text-white px-4 py-2 flex items-center justify-between">
+                                            <h3 className="text-sm font-black tracking-tight">Week {week} <span className="text-[10px] font-bold opacity-60 ml-2">({formatDate(weekStartDate)} - {formatDate(weekEndDate)})</span></h3>
+                                            <div className="text-[10px] font-bold opacity-60 uppercase tracking-widest">
+                                                {employees.length} employees & {shiftMode} shifts
                                             </div>
                                         </div>
-                                    );
-                                })
-                            }
-                        </div >
 
-                        <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-6 pb-8">
+                                        <div className="overflow-x-auto custom-scrollbar relative">
+                                            <table className="w-full border-collapse table-fixed">
+                                                <thead>
+                                                    <tr className={`text-[10px] uppercase tracking-widest text-white ${isDarkMode ? 'bg-slate-950' : 'bg-slate-800'}`}>
+                                                        <th className={`px-3 py-2 text-left font-black border-r w-[65px] ${isDarkMode ? 'border-slate-800' : 'border-slate-700'}`}>Date</th>
+                                                        {['A', 'B', 'C'].slice(0, shiftMode === '3' ? 3 : 2).map((shift, i) => (
+                                                            <th key={shift} className={`px-4 py-3 text-center font-black border-r ${isDarkMode ? 'border-slate-800' : 'border-slate-700'}`}>
+                                                                <div className="flex items-center justify-center gap-2">
+                                                                    <span className={`w-2 h-2 rounded-full ${i === 0 ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : i === 1 ? 'bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.5)]' : 'bg-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.5)]'}`}></span>
+                                                                    Shift {shift}
+                                                                </div>
+                                                            </th>
+                                                        ))}
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {DAYS.map((day, dayIndex) => {
+                                                        const date = getDateForCell(weekIndex, dayIndex);
+                                                        const isToday = formatDate(date) === formatDate(new Date());
+
+                                                        return (
+                                                            <tr key={`${week}-${day}`} className={`border-t group transition-all duration-200 ${isDarkMode ? 'border-slate-800 hover:bg-slate-800/50' : 'border-slate-50 hover:bg-slate-50'} ${isToday ? 'bg-teal-50/10' : ''}`}>
+                                                                <td className={`px-3 py-2 border-r ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-white'}`}>
+                                                                    <div className="flex flex-col items-center">
+                                                                        <div className={`text-sm font-black ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>{date.getDate()}</div>
+                                                                        <div className={`text-[10px] font-bold uppercase ${isDarkMode ? 'text-slate-400' : 'text-slate-700'}`}>{date.toLocaleDateString('en-GB', { month: 'short' })}</div>
+                                                                        <div className="text-[9px] font-bold text-slate-400 mt-0.5">{day}</div>
+                                                                        <button onClick={() => toggleHoliday(week, day)} className="mt-2 text-slate-300 hover:text-green-500 transition-colors p-1" title="Mark as holiday"><Palmtree size={12} /></button>
+                                                                    </div>
+                                                                </td>
+                                                                {['A', 'B', 'C'].slice(0, shiftMode === '3' ? 3 : 2).map(shift => {
+                                                                    const key = `${week}-${day}-${shift}`;
+                                                                    const cell = schedule[key] || { employees: [], status: 'normal', note: '' };
+                                                                    const prediction = checkPotentialConflict(draggedEmployee, week, day, shift);
+                                                                    const error = scheduleErrors[key];
+
+                                                                    return (
+                                                                        <td key={shift} onDrop={(e) => { setDragOverKey(null); handleDrop(e, week, day, shift); }} onDragOver={(e) => handleDragOver(e, key)} onDragLeave={handleDragLeave} className={`px-2 py-1.5 border-r last:border-r-0 cursor-pointer relative group-hover:bg-opacity-50 drag-target-cell transition-all duration-300 ${isDarkMode ? 'border-slate-800' : 'border-slate-200'} ${dragOverKey === key ? 'drag-over-active' : ''} ${draggedEmployee ? (prediction === 'safe' ? 'bg-emerald-500/20 ring-2 ring-emerald-500/50 glow-predictive-safe shadow-[inset_0_0_30px_rgba(16,185,129,0.2)]' : prediction === 'warning' ? 'bg-amber-500/25 ring-2 ring-amber-500/60 shadow-[inset_0_0_30px_rgba(245,158,11,0.25)]' : prediction === 'error' ? 'bg-red-500/20 opacity-30 grayscale blur-[0.5px]' : prediction === 'existing' ? 'bg-slate-500/10 opacity-50' : '') : (error?.type === 'error' ? 'bg-red-50 ring-1 ring-red-500 ring-inset shadow-[inset_0_0_20px_rgba(239,68,68,0.1)]' : error?.type === 'warning' ? 'bg-amber-50/30 conflict-pulse' : cell.status === 'holiday' ? 'bg-green-50/20' : cell.status === 'leave' ? 'bg-orange-50/20' : isDarkMode ? 'bg-slate-900/50' : 'bg-white')}`}>
+                                                                            {draggedEmployee && (
+                                                                                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center pointer-events-none overflow-hidden">
+                                                                                    {prediction === 'safe' && <motion.div initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center"><CheckCircle2 size={14} className="text-emerald-500 mb-0.5" /><span className="text-[7px] font-black text-emerald-600 uppercase tracking-tighter">SAFE</span></motion.div>}
+                                                                                    {prediction === 'warning' && <motion.div initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center"><AlertCircle size={14} className="text-amber-500 mb-0.5" /><span className="text-[7px] font-black text-amber-600 uppercase tracking-tighter">REST WARN</span></motion.div>}
+                                                                                    {prediction === 'error' && <motion.div initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center opacity-40"><UserX size={14} className="text-red-500 mb-0.5" /><span className="text-[7px] font-black text-red-600 uppercase tracking-tighter">BLOCKED</span></motion.div>}
+                                                                                </div>
+                                                                            )}
+                                                                            {cell.status === 'holiday' ? (
+                                                                                <div className="flex flex-col items-center justify-center h-full opacity-80"><Palmtree size={16} className="text-green-500 mb-1" /><div className="text-[8px] font-bold uppercase tracking-tighter text-green-600 text-center px-1 leading-tight">{cell.note || 'Holiday'}</div></div>
+                                                                            ) : (
+                                                                                <div className="min-h-[40px] flex flex-col justify-center">
+                                                                                    <div className="flex flex-wrap gap-1 mb-1">
+                                                                                        <AnimatePresence>
+                                                                                            {cell.employees.filter(Boolean).map(emp => {
+                                                                                                const liveEmp = employees.find(e => e.id === emp.id) || emp;
+                                                                                                return (
+                                                                                                    <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.5 }} key={`${week}-${day}-${shift}-${liveEmp.id}`} className="group/tag relative px-2 h-[22px] rounded-full text-[10px] font-black text-white shadow-sm ring-1 ring-black/5 flex items-center cursor-default transition-all duration-300" style={{ backgroundColor: liveEmp.color }}>
+                                                                                                        <span>{liveEmp.name}</span>
+                                                                                                        <div className="flex items-center gap-0.5 opacity-0 w-0 group-hover/tag:opacity-100 group-hover/tag:w-[42px] transition-all ml-0 group-hover/tag:ml-1.5 overflow-hidden">
+                                                                                                            <button onClick={(e) => { e.stopPropagation(); handleSwapMode(week, day, shift, liveEmp); }} className="rounded-full p-0.5 bg-black/20 hover:bg-black/40 text-white"><ArrowLeftRight size={8} strokeWidth={4} /></button>
+                                                                                                            <button onClick={(e) => { e.stopPropagation(); removeEmployeeFromCell(week, day, shift, liveEmp.id); }} className="rounded-full p-0.5 bg-black/20 hover:bg-black/40 text-white"><X size={8} strokeWidth={4} /></button>
+                                                                                                        </div>
+                                                                                                    </motion.div>
+                                                                                                );
+                                                                                            })}
+                                                                                        </AnimatePresence>
+                                                                                    </div>
+                                                                                    {(cell.employees.length < (shiftMode === '3' ? 2 : 3) || cell.status === 'leave') && (
+                                                                                        <button onClick={(e) => { e.stopPropagation(); getBestReplacements(week, day, shift); }} className="mt-1 flex items-center gap-1 text-[8px] font-black text-teal-600 uppercase transition-colors"><Sparkles size={10} /> Suggest</button>
+                                                                                    )}
+                                                                                    {cellSuggestions?.key === key && (
+                                                                                        <motion.div initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} className={`absolute top-full left-0 z-50 w-full min-w-[120px] shadow-2xl border-2 border-teal-500 rounded-xl p-2 mt-1 ${isDarkMode ? 'bg-slate-900' : 'bg-white'}`}>
+                                                                                            <div className="flex items-center justify-between mb-2"><span className="text-[9px] font-black uppercase text-teal-500 flex items-center gap-1"><Sparkles size={10} /> Best Matches</span><button onClick={(e) => { e.stopPropagation(); setCellSuggestions(null); }} className="text-slate-400 hover:text-slate-600"><X size={12} /></button></div>
+                                                                                            <div className="space-y-1.5">{cellSuggestions.list.map(sEmp => (<button key={sEmp.id} onClick={(e) => { e.stopPropagation(); handleDrop(null, week, day, shift, sEmp); setCellSuggestions(null); }} className={`w-full text-left p-1.5 text-[10px] font-bold rounded-lg flex items-center justify-between transition-colors ${isDarkMode ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-teal-50 text-slate-700'}`}><div className="flex items-center gap-2"><div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: sEmp.color }}></div>{sEmp.name}</div><div className="text-[8px] opacity-60 font-black">LOAD: {sEmp.workload}</div></button>))}</div>
+                                                                                        </motion.div>
+                                                                                    )}
+                                                                                    {error && <div className={`mt-1 flex items-center gap-1 font-black text-[9px] uppercase tracking-tighter ${error.type === 'error' ? 'text-red-600' : 'text-amber-600'}`}><AlertCircle size={10} /> {error.message}</div>}
+                                                                                </div>
+                                                                            )}
+                                                                        </td>
+                                                                    );
+                                                                })}
+                                                            </tr>
+                                                        );
+                                                    })}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+
+                        <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6 pb-8">
+                            {/* Shift Rotation Rules */}
+                            <div className={`text-sm p-6 rounded-2xl border shadow-sm hover:shadow-md transition-all ${isDarkMode ? 'bg-slate-900 border-slate-800 text-slate-400' : 'bg-white border-slate-200/60 text-slate-600'}`}>
+                                <strong className={`flex items-center gap-2 mb-3 ${isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>
+                                    <div className={`p-1.5 rounded-lg ${isDarkMode ? 'bg-slate-800' : 'bg-teal-50'}`}><Clock size={16} className="text-teal-600" /></div>
+                                    Shift Rotation Rules:
+                                </strong>
+                                <div className="space-y-2 text-[11px] font-medium leading-relaxed">
+                                    {activeDept.type === 'MES' ? (
+                                        shiftMode === '3' ? (
+                                            <>
+                                                <p><span className="font-black text-teal-500">MON-THU:</span> 2 persons/shift (A, B, C)</p>
+                                                <p><span className="font-black text-teal-500">FRI:</span> 1 per shift works, 3 OFF</p>
+                                                <p><span className="font-black text-teal-500">SAT:</span> Swap Fri workers with OFFs</p>
+                                                <p><span className="font-black text-teal-500">SUN:</span> 12hr (A: 7am-7pm, B/C: 7pm-7am)</p>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <p><span className="font-black text-teal-500">MON-THU:</span> 3 persons/shift (A & B)</p>
+                                                <p><span className="font-black text-teal-500">FRI:</span> 2 per shift work, 2 OFF</p>
+                                                <p><span className="font-black text-teal-500">SAT:</span> Balanced swap for OFFs</p>
+                                            </>
+                                        )
+                                    ) : (
+                                        <p>General department shift rules apply.</p>
+                                    )}
+                                </div>
+                            </div>
+
                             <div className={`text-sm p-6 rounded-2xl border shadow-sm hover:shadow-md transition-all ${isDarkMode ? 'bg-slate-900 border-slate-800 text-slate-400' : 'bg-white border-slate-200/60 text-slate-600'}`}>
                                 <strong className={`flex items-center gap-2 mb-3 ${isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>
                                     <div className={`p-1.5 rounded-lg ${isDarkMode ? 'bg-slate-800' : 'bg-blue-50'}`}><AlertCircle size={16} className="text-blue-600" /></div>
                                     How to Use:
                                 </strong>
-                                <ul className="space-y-2 ml-2 list-none text-[12px]">
-                                    <li className="flex items-start gap-2 before:content-['•'] before:text-blue-400">Drag employees from sidebar to assign shifts</li>
-                                    <li className="flex items-start gap-2 before:content-['•'] before:text-blue-400">Click "Auto Generate" for intelligent scheduling</li>
-                                    <li className="flex items-start gap-2 before:content-['•'] before:text-blue-400">Click Palm Tree <Palmtree size={10} className="inline mx-1 text-green-500" /> to mark holidays</li>
-                                    <li className="flex items-start gap-2 before:content-['•'] before:text-blue-400">Use "Mark Leave" to handle employee absences</li>
+                                <ul className="space-y-2 ml-2 list-none text-[11px]">
+                                    <li className="flex items-start gap-2 before:content-['•'] before:text-blue-400 leading-tight">Drag employees from sidebar to assign shifts</li>
+                                    <li className="flex items-start gap-2 before:content-['•'] before:text-blue-400 leading-tight">Click "Auto Generate" for smart scheduling</li>
+                                    <li className="flex items-start gap-2 before:content-['•'] before:text-blue-400 leading-tight">Click Palm Tree to mark holidays</li>
                                 </ul>
                             </div>
 
                             <div className={`text-sm p-6 rounded-2xl border shadow-sm hover:shadow-md transition-all ${isDarkMode ? 'bg-slate-900 border-slate-800 text-slate-400' : 'bg-white border-slate-200/60 text-slate-600'}`}>
                                 <strong className={`flex items-center gap-2 mb-3 ${isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>
                                     <div className={`p-1.5 rounded-lg ${isDarkMode ? 'bg-slate-800' : 'bg-purple-50'}`}><CheckCircle2 size={16} className="text-purple-600" /></div>
-                                    features:
+                                    Features:
                                 </strong>
-                                <ul className="space-y-2 ml-2 list-none text-[12px]">
-                                    <li className="flex items-start gap-2 before:content-['•'] before:text-purple-400">Automatic rotation based on shift rules</li>
-                                    <li className="flex items-start gap-2 before:content-['•'] before:text-purple-400">Excel export for easy sharing</li>
-                                    <li className="flex items-start gap-2 before:content-['•'] before:text-purple-400">PDF generation for transport department</li>
-                                    <li className="flex items-start gap-2 before:content-['•'] before:text-purple-400">Undo/Redo for mistake correction</li>
+                                <ul className="space-y-2 ml-2 list-none text-[11px]">
+                                    <li className="flex items-start gap-2 before:content-['•'] before:text-purple-400 leading-tight">Excel & PDF export for sharing</li>
+                                    <li className="flex items-start gap-2 before:content-['•'] before:text-purple-400 leading-tight">Undo/Redo for correction</li>
+                                    <li className="flex items-start gap-2 before:content-['•'] before:text-purple-400 leading-tight">Automatic workload balance</li>
                                 </ul>
                             </div>
                         </div>
                     </div>
                 </main>
-            </div >
+            </div>
 
             {/* Premium Confirmation Dialog */}
             <AnimatePresence>
@@ -3391,15 +3346,24 @@ export default function ROTAScheduler() {
           animation: slide-in 0.3s ease-out;
         }
         @media print {
-          aside {
-            display: none;
-          }
-          main {
-            padding: 0;
-          }
-          button {
-            display: none;
-          }
+          aside { display: none; }
+          main { padding: 0; }
+          button { display: none; }
+        }
+        .drag-over-active {
+            background-color: rgba(20, 184, 166, 0.15) !important;
+            box-shadow: inset 0 0 20px rgba(20, 184, 166, 0.2) !important;
+            transform: scale(1.01);
+            z-index: 10;
+        }
+        @keyframes predictive-pulse {
+            0% { box-shadow: inset 0 0 10px rgba(16, 185, 129, 0.1), 0 0 0px rgba(16, 185, 129, 0); }
+            50% { box-shadow: inset 0 0 35px rgba(16, 185, 129, 0.3), 0 0 15px rgba(16, 185, 129, 0.2); }
+            100% { box-shadow: inset 0 0 10px rgba(16, 185, 129, 0.1), 0 0 0px rgba(16, 185, 129, 0); }
+        }
+        .glow-predictive-safe {
+            animation: predictive-pulse 1.5s infinite ease-in-out;
+            z-index: 5;
         }
       `}</style>
         </div >
