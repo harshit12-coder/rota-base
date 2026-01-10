@@ -7,6 +7,25 @@ import { ID, Query } from 'appwrite';
 import { motion, AnimatePresence, useMotionValue, useSpring as useFramerSpring } from 'framer-motion';
 import confetti from 'canvas-confetti';
 import logo from "./assets/logo.png";
+import {
+    animateScheduleGridIn,
+    animateSidebarIn,
+    animateHeaderControls,
+    createEmployeeTagHover,
+    createButtonPress,
+    animateDragStart,
+    animateDragEnd,
+    animateCellDrop,
+    animateModalIn,
+    animateModalOut,
+    animateNotificationIn,
+    animateNotificationOut,
+    animateScheduleGeneration,
+    createMagneticHover,
+    animateCounter,
+    cleanupGSAP
+} from './utils/gsapAnimations';
+import './gsapAnimations.css';
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const SHIFTS = {
@@ -46,6 +65,10 @@ const DEFAULT_EMPLOYEES = [
 const DEFAULT_DEPARTMENTS = [
     { id: 'mes', name: "MES", type: "MES", color: "#D97706" }, // Amber
 ];
+
+
+
+
 
 
 
@@ -202,6 +225,7 @@ export default function ROTAScheduler() {
     const [isSyncing, setIsSyncing] = useState(false);
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('rota_theme') === 'dark');
+    const [isAutoTheme, setIsAutoTheme] = useState(() => localStorage.getItem('rota_auto_theme') === 'true');
     const [dragOverKey, setDragOverKey] = useState(null);
     const [selectedSwap, setSelectedSwap] = useState(null); // { week, day, shift, empId }
     const [cellSuggestions, setCellSuggestions] = useState(null); // { key, list: [] }
@@ -222,6 +246,11 @@ export default function ROTAScheduler() {
         onConfirm: null,
         type: 'warning' // 'warning', 'danger', 'info'
     });
+
+    const [showShortcutsMenu, setShowShortcutsMenu] = useState(false);
+    const [soundEnabled, setSoundEnabled] = useState(() => localStorage.getItem('rota_sound') !== 'false');
+    const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('rota_onboarding_done'));
+    const [onboardingStep, setOnboardingStep] = useState(0);
 
     const [scrolled, setScrolled] = useState(false);
     const [isFloatingTeamOpen, setIsFloatingTeamOpen] = useState(false);
@@ -321,6 +350,43 @@ export default function ROTAScheduler() {
     useEffect(() => {
         localStorage.setItem('rota_theme', isDarkMode ? 'dark' : 'light');
     }, [isDarkMode]);
+
+    // Persist auto-theme preference
+    useEffect(() => {
+        localStorage.setItem('rota_auto_theme', isAutoTheme.toString());
+    }, [isAutoTheme]);
+
+    // Auto Dark Mode based on time 🌙
+    useEffect(() => {
+        if (!isAutoTheme) return; // Only run if auto-theme is enabled
+
+        const checkTimeAndUpdateTheme = () => {
+            const now = new Date();
+            const hour = now.getHours();
+            
+            // Dark mode: 6 PM (18:00) to 6 AM (06:00)
+            const shouldBeDark = hour >= 18 || hour < 6;
+            
+            if (shouldBeDark !== isDarkMode) {
+                console.log(`🌓 Auto-switching to ${shouldBeDark ? 'dark' : 'light'} mode at ${hour}:00`);
+                setIsDarkMode(shouldBeDark);
+                
+                // Show subtle notification
+                showNotification(
+                    `Auto-switched to ${shouldBeDark ? 'dark 🌙' : 'light ☀️'} mode`,
+                    'success'
+                );
+            }
+        };
+
+        // Check immediately
+        checkTimeAndUpdateTheme();
+
+        // Check every minute
+        const interval = setInterval(checkTimeAndUpdateTheme, 60000);
+
+        return () => clearInterval(interval);
+    }, [isAutoTheme, isDarkMode]);
 
     // --- Robust Sync State ---
     const lastSyncedSchedule = React.useRef({});
@@ -609,6 +675,213 @@ export default function ROTAScheduler() {
     useEffect(() => { localStorage.setItem(getSKey('outlookDL'), outlookDL); }, [outlookDL, activeDeptId]);
     useEffect(() => { localStorage.setItem(getSKey('patternConfig'), JSON.stringify(patternConfig)); }, [patternConfig, activeDeptId]);
     useEffect(() => { localStorage.setItem(getSKey('generationMeta'), JSON.stringify(generationMeta)); }, [generationMeta, activeDeptId]);
+
+    // ==================== GSAP ANIMATIONS ====================
+    
+    // NOTE: Page load animations disabled to prevent conflicts with Framer Motion
+    // Framer Motion already handles sidebar, header, and grid animations beautifully!
+    
+    // Employee tag hover effects - SMOOTH LIFT ANIMATION
+    useEffect(() => {
+        const employeeTags = document.querySelectorAll('.employee-tag');
+        const cleanupFns = [];
+        
+        employeeTags.forEach(tag => {
+            const cleanup = createEmployeeTagHover(tag);
+            if (cleanup) cleanupFns.push(cleanup);
+        });
+        
+        // Cleanup on unmount or when schedule/employees change
+        return () => {
+            cleanupFns.forEach(fn => fn());
+        };
+    }, [schedule, employees]);
+
+    // Button press effects for all clickable buttons - SATISFYING PRESS
+    useEffect(() => {
+        const buttons = document.querySelectorAll('button:not(.no-animation)');
+        const cleanupFns = [];
+        
+        buttons.forEach(btn => {
+            const cleanup = createButtonPress(btn);
+            if (cleanup) cleanupFns.push(cleanup);
+        });
+        
+        return () => {
+            cleanupFns.forEach(fn => fn());
+        };
+    }, [employees.length, rotationWeeks]); // Re-apply when UI structure might change
+
+    // Magnetic hover for important action buttons - FUTURISTIC EFFECT
+    useEffect(() => {
+        const magneticBtns = document.querySelectorAll('.btn-magnetic');
+        const cleanupFns = [];
+        
+        magneticBtns.forEach(btn => {
+            const cleanup = createMagneticHover(btn, 0.15);
+            if (cleanup) cleanupFns.push(cleanup);
+        });
+        
+        return () => {
+            cleanupFns.forEach(fn => fn());
+        };
+    }, []);
+
+    // Stats counter animation - Numbers count up from 0! 📊 ⭐⭐⭐⭐
+    useEffect(() => {
+        if (showStatsModal) {
+            const stats = calculateStats();
+            
+            // Small delay to let modal render first
+            setTimeout(() => {
+                // 1. Animate Fairness Score (big number)
+                const scoreElement = document.querySelector('.fairness-score-number');
+                if (scoreElement) {
+                    animateCounter(scoreElement, parseInt(stats.score), 1.2);
+                }
+                
+                // 2. Animate each employee's stats (staggered for smooth effect)
+                stats.details.forEach((stat, index) => {
+                    setTimeout(() => {
+                        // Total shifts
+                        const totalElement = document.querySelector(`#stat-total-${stat.id}`);
+                        if (totalElement) {
+                            animateCounter(totalElement, stat.total, 0.8);
+                        }
+                        
+                        // Night shifts
+                        const nightElement = document.querySelector(`#stat-night-${stat.id}`);
+                        if (nightElement) {
+                            animateCounter(nightElement, stat.night, 0.6);
+                        }
+                        
+                        // Weekend shifts
+                        const weekendElement = document.querySelector(`#stat-weekend-${stat.id}`);
+                        if (weekendElement) {
+                            animateCounter(weekendElement, stat.weekend, 0.6);
+                        }
+                    }, index * 80); // Stagger each employee card by 80ms
+                });
+            }, 300); // Wait for modal animation to start
+        }
+    }, [showStatsModal]);
+
+
+    // ==================== KEYBOARD SHORTCUTS ⌨️ ====================
+    useEffect(() => {
+        const handleKeyboardShortcut = (e) => {
+            // Ignore shortcuts when typing in input fields
+            const isInputActive = ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName);
+            
+            // Escape - Close any open modal
+            if (e.key === 'Escape') {
+                if (showStatsModal) setShowStatsModal(false);
+                else if (showLeaveModal) setShowLeaveModal(false);
+                else if (showDeptModal) setShowDeptModal(false);
+                else if (showAllowanceModal) setShowAllowanceModal(false);
+                else if (showRules) setShowRules(false);
+                else if (showShortcutsMenu) setShowShortcutsMenu(false);
+                else if (confirmDialog.isOpen) setConfirmDialog({ ...confirmDialog, isOpen: false });
+                return;
+            }
+
+            // ? - Show shortcuts help menu
+            if (e.key === '?' && !isInputActive) {
+                e.preventDefault();
+                setShowShortcutsMenu(true);
+                playMicroInteraction('pop');
+                return;
+            }
+
+            // Don't process Ctrl shortcuts in input fields (except Ctrl+S)
+            if (isInputActive && e.key !== 's') return;
+
+            // Ctrl/Cmd shortcuts
+            const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+            const modifier = isMac ? e.metaKey : e.ctrlKey;
+
+            if (modifier) {
+                switch (e.key.toLowerCase()) {
+                    case 'g':
+                        // Ctrl+G - Generate Schedule
+                        e.preventDefault();
+                        assignRotaAutomatically();
+                        showNotification('⌨️ Generated schedule (Ctrl+G)', 'success');
+                        break;
+
+                    case 's':
+                        // Ctrl+S - Save feedback (already auto-saves)
+                        e.preventDefault();
+                        showNotification('✅ Auto-saved! (Ctrl+S)', 'success');
+                        playMicroInteraction('success');
+                        break;
+
+                    case 'z':
+                        // Ctrl+Z - Undo (already handled by button)
+                        if (!e.shiftKey && historyIndex < history.length - 1) {
+                            e.preventDefault();
+                            undo();
+                            showNotification('↶ Undo (Ctrl+Z)', 'success');
+                        }
+                        break;
+
+                    case 'y':
+                        // Ctrl+Y - Redo
+                        if (historyIndex > 0) {
+                            e.preventDefault();
+                            redo();
+                            showNotification('↷ Redo (Ctrl+Y)', 'success');
+                        }
+                        break;
+
+                    case 'k':
+                        // Ctrl+K - Show shortcuts menu
+                        e.preventDefault();
+                        setShowShortcutsMenu(!showShortcutsMenu);
+                        playMicroInteraction('pop');
+                        break;
+
+                    case 'p':
+                        // Ctrl+P - Print (browser default, but show message)
+                        showNotification('🖨️ Opening print dialog...', 'success');
+                        break;
+
+                    case 'd':
+                        // Ctrl+D - Toggle dark mode
+                        e.preventDefault();
+                        setIsDarkMode(!isDarkMode);
+                        showNotification(`🌓 ${!isDarkMode ? 'Dark' : 'Light'} mode (Ctrl+D)`, 'success');
+                        break;
+
+                    case 'b':
+                        // Ctrl+B - Toggle sidebar
+                        e.preventDefault();
+                        setIsSidebarOpen(!isSidebarOpen);
+                        showNotification(`Sidebar ${!isSidebarOpen ? 'shown' : 'hidden'} (Ctrl+B)`, 'success');
+                        break;
+
+                    case 'i':
+                        // Ctrl+I - Open Stats/Info
+                        e.preventDefault();
+                        setShowStatsModal(true);
+                        showNotification('📊 Stats opened (Ctrl+I)', 'success');
+                        playMicroInteraction('pop');
+                        break;
+
+                    default:
+                        break;
+                }
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyboardShortcut);
+        return () => window.removeEventListener('keydown', handleKeyboardShortcut);
+    }, [
+        showStatsModal, showLeaveModal, showDeptModal, showAllowanceModal, 
+        showRules, showShortcutsMenu, confirmDialog, historyIndex, 
+        history.length, isDarkMode, isSidebarOpen
+    ]);
+
 
     const switchDepartment = (id, forcedDepts = null) => {
         setActiveDeptId(id);
@@ -2031,7 +2304,7 @@ export default function ROTAScheduler() {
                                                     <div>
                                                         <span className="text-[8px] font-black text-slate-500 uppercase tracking-[0.3em] block mb-1.5">Fairness Score</span>
                                                         <div className="flex items-baseline gap-1.5">
-                                                            <div className={`text-5xl font-[1000] tracking-tighter ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{stats.score}</div>
+                                                            <div id="fairness-score" className={`fairness-score-number text-5xl font-[1000] tracking-tighter ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{stats.score}</div>
                                                             <div className="text-lg font-black text-slate-400">/100</div>
                                                         </div>
                                                         <div className={`mt-2.5 px-2.5 py-1 rounded-lg inline-flex items-center gap-1.5 text-[9px] font-black uppercase tracking-tight border ${stats.score > 90 ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' : stats.score > 75 ? 'bg-amber-500/10 border-amber-500/30 text-amber-500' : 'bg-red-500/10 border-red-500/30 text-red-500'}`}>
@@ -2187,21 +2460,21 @@ export default function ROTAScheduler() {
                                                                 <div className="text-[9px] font-bold text-slate-500 mt-1 uppercase tracking-widest">{employees.find(e => e.id === stat.id)?.shift} Base Preference</div>
                                                             </div>
                                                         </div>
-                                                        <div className={`text-xl font-[1000] tracking-tighter ${stat.id === highest.id ? 'text-teal-500' : isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{stat.total}</div>
+                                                        <div id={`stat-total-${stat.id}`} className={`text-xl font-[1000] tracking-tighter ${stat.id === highest.id ? 'text-teal-500' : isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{stat.total}</div>
                                                     </div>
                                                     <div className="grid grid-cols-2 gap-2">
                                                         <div className={`px-3 py-2 rounded-2xl flex items-center gap-3 ${isDarkMode ? 'bg-slate-950/40' : 'bg-slate-50'}`}>
                                                             <div className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-500"><Moon size={12} /></div>
                                                             <div className="flex flex-col">
                                                                 <span className="text-[8px] font-black text-slate-500 uppercase">Nights</span>
-                                                                <span className={`text-xs font-black ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>{stat.night}</span>
+                                                                <span id={`stat-night-${stat.id}`} className={`text-xs font-black ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>{stat.night}</span>
                                                             </div>
                                                         </div>
                                                         <div className={`px-3 py-2 rounded-2xl flex items-center gap-3 ${isDarkMode ? 'bg-slate-950/40' : 'bg-slate-50'}`}>
                                                             <div className="p-1.5 rounded-lg bg-orange-500/10 text-orange-500"><Calendar size={12} /></div>
                                                             <div className="flex flex-col">
                                                                 <span className="text-[8px] font-black text-slate-500 uppercase">Weekends</span>
-                                                                <span className={`text-xs font-black ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>{stat.weekend}</span>
+                                                                <span id={`stat-weekend-${stat.id}`} className={`text-xs font-black ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>{stat.weekend}</span>
                                                             </div>
                                                         </div>
                                                     </div>
@@ -2592,7 +2865,7 @@ export default function ROTAScheduler() {
                         damping: 30,
                         mass: 0.7
                     }}
-                    className={`${isDarkMode ? 'bg-slate-900 border-r border-slate-800' : 'bg-white border-r border-slate-200'} z-30 flex flex-col h-screen overflow-hidden relative ${isSidebarOpen
+                    className={`sidebar ${isDarkMode ? 'bg-slate-900 border-r border-slate-800' : 'bg-white border-r border-slate-200'} z-30 flex flex-col h-screen overflow-hidden relative ${isSidebarOpen
                         ? `${isDarkMode ? 'shadow-[4px_0_20px_rgba(0,0,0,0.4)]' : 'shadow-[4px_0_20px_rgba(0,0,0,0.08)]'}`
                         : 'shadow-none'
                         } transition-shadow duration-300`}
@@ -2792,7 +3065,7 @@ export default function ROTAScheduler() {
                 {/* Main Content */}
                 <main className={`flex-1 relative overflow-hidden flex flex-col ${isDarkMode ? 'bg-slate-950' : 'bg-slate-50'}`}>
                     {/* Header Controls */}
-                    <div className={`backdrop-blur-md border-b px-6 py-2.5 z-20 flex justify-between items-center shadow-sm ${isDarkMode ? 'bg-slate-900/90 border-slate-800' : 'bg-white/90 border-slate-200/60'}`}>
+                    <div className={`header-controls backdrop-blur-md border-b px-6 py-2.5 z-20 flex justify-between items-center shadow-sm ${isDarkMode ? 'bg-slate-900/90 border-slate-800' : 'bg-white/90 border-slate-200/60'}`}>
                         <div className="flex items-center gap-4">
                             {/* Hamburger Button (Visible when sidebar closed) - Premium */}
                             <AnimatePresence>
@@ -2892,12 +3165,40 @@ export default function ROTAScheduler() {
 
 
 
-                            <button
-                                onClick={() => setIsDarkMode(!isDarkMode)}
-                                className={`p-2 rounded-xl border transition-all ${isDarkMode ? 'bg-slate-800 border-slate-700 text-yellow-400 hover:text-yellow-300 shadow-[0_0_15px_rgba(250,204,21,0.1)]' : 'bg-white border-slate-200 text-slate-400 hover:text-amber-500 shadow-sm'}`}
-                            >
-                                {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
-                            </button>
+
+
+
+                            {/* Theme Toggle with Auto Mode */}
+                            <div className="relative group">
+                                <button
+                                    onClick={() => setIsDarkMode(!isDarkMode)}
+                                    onContextMenu={(e) => {
+                                        e.preventDefault();
+                                        setIsAutoTheme(!isAutoTheme);
+                                        showNotification(
+                                            `Auto theme ${!isAutoTheme ? 'enabled 🌓' : 'disabled'}`,
+                                            'success'
+                                        );
+                                    }}
+                                    title={isAutoTheme ? "Right-click to disable auto-theme" : "Click to toggle | Right-click for auto-theme"}
+                                    className={`p-2 rounded-xl border transition-all relative ${isDarkMode ? 'bg-slate-800 border-slate-700 text-yellow-400 hover:text-yellow-300 shadow-[0_0_15px_rgba(250,204,21,0.1)]' : 'bg-white border-slate-200 text-slate-400 hover:text-amber-500 shadow-sm'}`}
+                                >
+                                    {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
+                                    {isAutoTheme && (
+                                        <motion.div
+                                            initial={{ scale: 0 }}
+                                            animate={{ scale: 1 }}
+                                            className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-teal-500 border-2 border-white dark:border-slate-900 flex items-center justify-center"
+                                        >
+                                            <div className="w-1 h-1 rounded-full bg-white animate-pulse"></div>
+                                        </motion.div>
+                                    )}
+                                </button>
+                                {/* Tooltip */}
+                                <div className={`absolute right-0 top-full mt-2 px-2 py-1 rounded-lg text-[9px] font-bold whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 ${isDarkMode ? 'bg-slate-800 text-slate-200' : 'bg-white text-slate-700'} shadow-lg border ${isDarkMode ? 'border-slate-700' : 'border-slate-200'}`}>
+                                    {isAutoTheme ? '🌓 Auto (6PM-6AM)' : '💡 Manual mode'}
+                                </div>
+                            </div>
                         </div>
 
                         <div className="text-[11px] font-bold text-slate-400 uppercase tracking-widest hidden lg:block">
@@ -3111,7 +3412,7 @@ export default function ROTAScheduler() {
                         </AnimatePresence>
 
                         {/* Schedule Table Container */}
-                        <div className={`rounded-2xl shadow-xl overflow-hidden border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-gray-200'}`}>
+                        <div className={`schedule-table rounded-2xl shadow-xl overflow-hidden border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-gray-200'}`}>
                             {Array.from({ length: rotationWeeks }, (_, weekIndex) => {
                                 const week = weekIndex + 1;
                                 const weekStartDate = getDateForCell(weekIndex, 0);
@@ -3163,7 +3464,7 @@ export default function ROTAScheduler() {
                                                                     const error = scheduleErrors[key];
 
                                                                     return (
-                                                                        <td key={shift} onDrop={(e) => { setDragOverKey(null); handleDrop(e, week, day, shift); }} onDragOver={(e) => handleDragOver(e, key)} onDragLeave={handleDragLeave} className={`px-2 py-1.5 border-r last:border-r-0 cursor-pointer relative group-hover:bg-opacity-50 drag-target-cell transition-all duration-300 ${isDarkMode ? 'border-slate-800' : 'border-slate-200'} ${dragOverKey === key ? 'drag-over-active' : ''} ${draggedEmployee ? (prediction === 'safe' ? 'bg-emerald-500/20 ring-2 ring-emerald-500/50 glow-predictive-safe shadow-[inset_0_0_30px_rgba(16,185,129,0.2)]' : prediction === 'warning' ? 'bg-amber-500/25 ring-2 ring-amber-500/60 shadow-[inset_0_0_30px_rgba(245,158,11,0.25)]' : prediction === 'error' ? 'bg-red-500/20 opacity-30 grayscale blur-[0.5px]' : prediction === 'existing' ? 'bg-slate-500/10 opacity-50' : '') : (error?.type === 'error' ? 'bg-red-50 ring-1 ring-red-500 ring-inset shadow-[inset_0_0_20px_rgba(239,68,68,0.1)]' : error?.type === 'warning' ? 'bg-amber-50/30 conflict-pulse' : cell.status === 'holiday' ? 'bg-green-50/20' : cell.status === 'leave' ? 'bg-orange-50/20' : isDarkMode ? 'bg-slate-900/50' : 'bg-white')}`}>
+                                                                        <td key={shift} data-cell-key={key} onDrop={(e) => { setDragOverKey(null); handleDrop(e, week, day, shift); }} onDragOver={(e) => handleDragOver(e, key)} onDragLeave={handleDragLeave} className={`schedule-cell px-2 py-1.5 border-r last:border-r-0 cursor-pointer relative group-hover:bg-opacity-50 drag-target-cell transition-all duration-300 ${isDarkMode ? 'border-slate-800' : 'border-slate-200'} ${dragOverKey === key ? 'drag-over-active' : ''} ${draggedEmployee ? (prediction === 'safe' ? 'bg-emerald-500/20 ring-2 ring-emerald-500/50 glow-predictive-safe shadow-[inset_0_0_30px_rgba(16,185,129,0.2)]' : prediction === 'warning' ? 'bg-amber-500/25 ring-2 ring-amber-500/60 shadow-[inset_0_0_30px_rgba(245,158,11,0.25)]' : prediction === 'error' ? 'bg-red-500/20 opacity-30 grayscale blur-[0.5px]' : prediction === 'existing' ? 'bg-slate-500/10 opacity-50' : '') : (error?.type === 'error' ? 'bg-red-50 ring-1 ring-red-500 ring-inset shadow-[inset_0_0_20px_rgba(239,68,68,0.1)]' : error?.type === 'warning' ? 'bg-amber-50/30 conflict-pulse' : cell.status === 'holiday' ? 'bg-green-50/20' : cell.status === 'leave' ? 'bg-orange-50/20' : isDarkMode ? 'bg-slate-900/50' : 'bg-white')}`}>
                                                                             {draggedEmployee && (
                                                                                 <div className="absolute inset-0 z-10 flex flex-col items-center justify-center pointer-events-none overflow-hidden">
                                                                                     {prediction === 'safe' && <motion.div initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center"><CheckCircle2 size={14} className="text-emerald-500 mb-0.5" /><span className="text-[7px] font-black text-emerald-600 uppercase tracking-tighter">SAFE</span></motion.div>}
@@ -3180,7 +3481,7 @@ export default function ROTAScheduler() {
                                                                                             {cell.employees.filter(Boolean).map(emp => {
                                                                                                 const liveEmp = employees.find(e => e.id === emp.id) || emp;
                                                                                                 return (
-                                                                                                    <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.5 }} key={`${week}-${day}-${shift}-${liveEmp.id}`} className="group/tag relative px-2 h-[22px] rounded-full text-[10px] font-black text-white shadow-sm ring-1 ring-black/5 flex items-center cursor-default transition-all duration-300" style={{ backgroundColor: liveEmp.color }}>
+                                                                                                    <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.5 }} key={`${week}-${day}-${shift}-${liveEmp.id}`} className="employee-tag group/tag relative px-2 h-[22px] rounded-full text-[10px] font-black text-white shadow-sm ring-1 ring-black/5 flex items-center cursor-default transition-all duration-300" style={{ backgroundColor: liveEmp.color }}>
                                                                                                         <span>{liveEmp.name}</span>
                                                                                                         <div className="flex items-center gap-0.5 opacity-0 w-0 group-hover/tag:opacity-100 group-hover/tag:w-[42px] transition-all ml-0 group-hover/tag:ml-1.5 overflow-hidden">
                                                                                                             <button onClick={(e) => { e.stopPropagation(); handleSwapMode(week, day, shift, liveEmp); }} className="rounded-full p-0.5 bg-black/20 hover:bg-black/40 text-white"><ArrowLeftRight size={8} strokeWidth={4} /></button>
@@ -3330,6 +3631,150 @@ export default function ROTAScheduler() {
                     </div>
                 )}
             </AnimatePresence>
+
+            {/* Keyboard Shortcuts Menu */}
+            <AnimatePresence>
+                {showShortcutsMenu && (
+                    <div className="fixed inset-0 z-[999] flex items-center justify-center p-4">
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            onClick={() => setShowShortcutsMenu(false)}
+                            className="absolute inset-0 bg-slate-950/80 backdrop-blur-md"
+                        />
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                            transition={{ type: "spring", damping: 25, stiffness: 300 }}
+                            className={`relative w-full max-w-2xl max-h-[80vh] overflow-y-auto custom-scrollbar rounded-3xl border shadow-2xl ${isDarkMode ? 'bg-slate-900/95 border-slate-700' : 'bg-white border-slate-200'}`}
+                        >
+                            {/* Header */}
+                            <div className={`sticky top-0 z-10 backdrop-blur-lg border-b ${isDarkMode ? 'bg-slate-900/90 border-slate-800' : 'bg-white/90 border-slate-200'}`}>
+                                <div className="p-6 pb-4">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-3">
+                                            <div className="p-3 rounded-xl bg-gradient-to-br from-teal-500 to-emerald-600 text-white">
+                                                <Settings2 size={24} />
+                                            </div>
+                                            <div>
+                                                <h2 className={`text-2xl font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                                                    Keyboard Shortcuts
+                                                </h2>
+                                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-0.5">
+                                                    Power User Commands
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={() => setShowShortcutsMenu(false)}
+                                            className={`p-2 rounded-xl transition-all ${isDarkMode ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-600'}`}
+                                        >
+                                            <X size={20} />
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Shortcuts List */}
+                            <div className="p-6 space-y-6">
+                                {/* General */}
+                                <div>
+                                    <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-3">General</h3>
+                                    <div className="space-y-2">
+                                        {[
+                                            { keys: ['?'], desc: 'Show this shortcuts menu' },
+                                            { keys: ['Ctrl', 'K'], desc: 'Toggle shortcuts menu' },
+                                            { keys: ['Esc'], desc: 'Close any modal/dialog' },
+                                            { keys: ['Ctrl', 'S'], desc: 'Save (Auto-save feedback)' }
+                                        ].map((item, i) => (
+                                            <div key={i} className={`flex items-center justify-between p-3 rounded-xl transition-colors ${isDarkMode ? 'hover:bg-slate-800' : 'hover:bg-slate-50'}`}>
+                                                <span className={`text-sm font-medium ${isDarkMode ? 'text-slate-300' : 'text-slate-700'}`}>{item.desc}</span>
+                                                <div className="flex items-center gap-1">
+                                                    {item.keys.map((key, idx) => (
+                                                        <React.Fragment key={idx}>
+                                                            <kbd className={`px-2.5 py-1.5 rounded-lg text-xs font-black min-w-[32px] text-center ${isDarkMode ? 'bg-slate-800 text-slate-200 border border-slate-700' : 'bg-slate-100 text-slate-700 border border-slate-200'} shadow-sm`}>{key}</kbd>
+                                                            {idx < item.keys.length - 1 && <span className="text-slate-500 text-xs font-bold mx-0.5">+</span>}
+                                                        </React.Fragment>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {/* Schedule Actions */}
+                                <div>
+                                    <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-3">Schedule Actions</h3>
+                                    <div className="space-y-2">
+                                        {[
+                                            { keys: ['Ctrl', 'G'], desc: 'Generate Schedule' },
+                                            { keys: ['Ctrl', 'I'], desc: 'Open Stats & Fairness' },
+                                            { keys: ['Ctrl', 'Z'], desc: 'Undo last action' },
+                                            { keys: ['Ctrl', 'Y'], desc: 'Redo action' }
+                                        ].map((item, i) => (
+                                            <div key={i} className={`flex items-center justify-between p-3 rounded-xl transition-colors ${isDarkMode ? 'hover:bg-slate-800' : 'hover:bg-slate-50'}`}>
+                                                <span className={`text-sm font-medium ${isDarkMode ? 'text-slate-300' : 'text-slate-700'}`}>{item.desc}</span>
+                                                <div className="flex items-center gap-1">
+                                                    {item.keys.map((key, idx) => (
+                                                        <React.Fragment key={idx}>
+                                                            <kbd className={`px-2.5 py-1.5 rounded-lg text-xs font-black min-w-[32px] text-center ${isDarkMode ? 'bg-slate-800 text-slate-200 border border-slate-700' : 'bg-slate-100 text-slate-700 border border-slate-200'} shadow-sm`}>{key}</kbd>
+                                                            {idx < item.keys.length - 1 && <span className="text-slate-500 text-xs font-bold mx-0.5">+</span>}
+                                                        </React.Fragment>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {/* View Controls */}
+                                <div>
+                                    <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-3">View Controls</h3>
+                                    <div className="space-y-2">
+                                        {[
+                                            { keys: ['Ctrl', 'D'], desc: 'Toggle Dark/Light mode' },
+                                            { keys: ['Ctrl', 'B'], desc: 'Toggle Sidebar' },
+                                            { keys: ['Ctrl', 'P'], desc: 'Print schedule' }
+                                        ].map((item, i) => (
+                                            <div key={i} className={`flex items-center justify-between p-3 rounded-xl transition-colors ${isDarkMode ? 'hover:bg-slate-800' : 'hover:bg-slate-50'}`}>
+                                                <span className={`text-sm font-medium ${isDarkMode ? 'text-slate-300' : 'text-slate-700'}`}>{item.desc}</span>
+                                                <div className="flex items-center gap-1">
+                                                    {item.keys.map((key, idx) => (
+                                                        <React.Fragment key={idx}>
+                                                            <kbd className={`px-2.5 py-1.5 rounded-lg text-xs font-black min-w-[32px] text-center ${isDarkMode ? 'bg-slate-800 text-slate-200 border border-slate-700' : 'bg-slate-100 text-slate-700 border border-slate-200'} shadow-sm`}>{key}</kbd>
+                                                            {idx < item.keys.length - 1 && <span className="text-slate-500 text-xs font-bold mx-0.5">+</span>}
+                                                        </React.Fragment>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {/* Pro Tips */}
+                                <div className={`p-4 rounded-2xl border ${isDarkMode ? 'bg-teal-500/5 border-teal-500/20' : 'bg-teal-50 border-teal-200'}`}>
+                                    <div className="flex items-start gap-3">
+                                        <div className="p-2 rounded-lg bg-teal-500/10 text-teal-600">
+                                            <Sparkles size={16} />
+                                        </div>
+                                        <div className="flex-1">
+                                            <div className="text-xs font-black text-teal-600 mb-1">Pro Tips</div>
+                                            <ul className={`text-[11px] space-y-1 ${isDarkMode ? 'text-slate-400' : 'text-slate-600'}`}>
+                                                <li>• Shortcuts work everywhere except in text inputs</li>
+                                                <li>• Mac users: Use <kbd className="px-1 py-0.5 rounded bg-slate-700 text-white text-[9px]">⌘</kbd> instead of Ctrl</li>
+                                                <li>• Press <kbd className="px-1 py-0.5 rounded bg-slate-700 text-white text-[9px]">Esc</kbd> to quickly close any modal</li>
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
+
 
             <style>{`
         @keyframes slide-in {

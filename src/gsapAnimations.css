@@ -1,0 +1,124 @@
+/* ========================================
+   GSAP Animation Enhancement Styles
+   ======================================== */
+
+/* Enable hardware acceleration for animated elements */
+.sidebar,
+.header-controls,
+.schedule-table,
+.employee-tag,
+.schedule-cell,
+.modal-backdrop,
+.notification-toast {
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  perspective: 1000px;
+}
+
+/* Employee Tag Enhancements */
+.employee-tag {
+  cursor: grab;
+  transition: box-shadow 0.3s ease;
+  position: relative;
+  z-index: 1;
+}
+
+.employee-tag:active {
+  cursor: grabbing;
+}
+
+/* Schedule Cell */
+.schedule-cell {
+  transform-origin: center;
+  transition: background-color 0.3s ease;
+}
+
+/* Magnetic Button Base Styles */
+.btn-magnetic {
+  position: relative;
+  transform-style: preserve-3d;
+  cursor: pointer;
+  transition: box-shadow 0.3s ease;
+}
+
+.btn-magnetic:hover {
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+}
+
+/* Notification Toast */
+.notification-toast {
+  position: fixed;
+  right: 20px;
+  top: 80px;
+  z-index: 9999;
+  transform-origin: right center;
+}
+
+/* Modal Animations */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+}
+
+.stats-modal,
+.leave-modal,
+.dept-modal {
+  transform-origin: center;
+  position: relative;
+  z-index: 9999;
+}
+
+/* Smooth scrolling */
+.schedule-container {
+  scroll-behavior: smooth;
+}
+
+/* Reduce motion for accessibility */
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .header-controls,
+  .schedule-table,
+  .employee-tag,
+  .schedule-cell,
+  .notification-toast {
+    will-change: auto;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Animation performance optimizations */
+@media (max-width: 768px) {
+  /* Reduce complexity on mobile devices */
+  .btn-magnetic {
+    transform: none !important;
+  }
+
+  .sidebar,
+  .header-controls,
+  .schedule-table {
+    will-change: auto;
+  }
+}
+
+/* Prevent layout shift during animations */
+.schedule-table {
+  min-height: 400px;
+}
+
+/* Smooth transforms */
+.employee-tag,
+.schedule-cell {
+  transform: translateZ(0);
+}
+
+/* Enhanced focus states for accessibility */
+button:focus-visible,
+.employee-tag:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
