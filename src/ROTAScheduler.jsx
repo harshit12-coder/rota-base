@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'; // Version 1.1 
-import { Calendar, Users, Download, FileSpreadsheet, Undo2, Redo2, Plus, Trash2, Clock, AlertCircle, CheckCircle2, UserX, Palmtree, Send, BarChart3, Smartphone, ChevronDown, ChevronUp, Briefcase, Settings2, ShieldCheck, X, ChevronLeft, ChevronRight, Sun, Moon, Sparkles, ArrowLeftRight, FileSearch, Globe, Calculator, Wallet, Mail, Grab } from 'lucide-react';
+import { Calendar, Users, Download, FileSpreadsheet, Undo2, Redo2, Plus, Trash2, Clock, AlertCircle, CheckCircle2, UserX, Palmtree, Send, BarChart3, Smartphone, ChevronDown, ChevronUp, Briefcase, Settings2, ShieldCheck, X, ChevronLeft, ChevronRight, Sun, Moon, Sparkles, ArrowLeftRight, FileSearch, Globe, Calculator, Wallet, Mail, Grab, Wand2, MessageCircle, ScanEye, Maximize2, Minimize2 } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 import { databases, account, DATABASE_ID, COLLECTIONS } from './lib/appwrite';
@@ -26,6 +26,10 @@ import {
     cleanupGSAP
 } from './utils/gsapAnimations';
 import './gsapAnimations.css';
+import { useAuth } from './contexts/AuthContext';
+import { usePermissions } from './utils/permissions';
+import { LogOut, Lock } from 'lucide-react';
+import AdminDashboard from './components/AdminDashboard';
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const SHIFTS = {
@@ -74,6 +78,9 @@ const DEFAULT_DEPARTMENTS = [
 
 
 export default function ROTAScheduler() {
+    const { user, role, logout } = useAuth();
+    const perms = usePermissions(role);
+
     // --- Department Management ---
     const [departments, setDepartments] = useState(() => {
         const saved = localStorage.getItem('rota_departments');
@@ -228,6 +235,7 @@ export default function ROTAScheduler() {
     const [isAutoTheme, setIsAutoTheme] = useState(() => localStorage.getItem('rota_auto_theme') === 'true');
     const [dragOverKey, setDragOverKey] = useState(null);
     const [selectedSwap, setSelectedSwap] = useState(null); // { week, day, shift, empId }
+    const [highlightedEmpId, setHighlightedEmpId] = useState(null); // Focus Mode State
     const [cellSuggestions, setCellSuggestions] = useState(null); // { key, list: [] }
     const [isFetchingHolidays, setIsFetchingHolidays] = useState(false);
     const [patternConfig, setPatternConfig] = useState(() => {
@@ -235,20 +243,121 @@ export default function ROTAScheduler() {
         return saved ? JSON.parse(saved) : { A: 4, B: 4, C: 0, Off: 2 };
     });
     const [showAllowanceModal, setShowAllowanceModal] = useState(false);
+    const [showAdminDashboard, setShowAdminDashboard] = useState(false);
     const [allowanceRange, setAllowanceRange] = useState({
         start: new Date().toISOString().split('T')[0],
         end: new Date(new Date().setDate(new Date().getDate() + 30)).toISOString().split('T')[0]
     });
+
+    // View Navigation State (Paginated Weeks)
+    const [viewOffset, setViewOffset] = useState(() => {
+        const start = new Date(startDate);
+        // Snap start to its calculated Monday logic same as getDateForCell
+        const day = start.getDay();
+        let diff = 0;
+        if (day === 1) diff = 0;
+        else if (day === 0) diff = 1;
+        else if (day >= 5) diff = 8 - day;
+        else diff = 1 - day;
+        start.setDate(start.getDate() + diff);
+
+        const now = new Date();
+        // Calculate full weeks difference
+        const oneWeek = 7 * 24 * 60 * 60 * 1000;
+        const diffWeeks = Math.floor((now - start) / oneWeek);
+        
+        // Return max(0, diffWeeks) ?? No, allow negative for past checking if user wants?
+        // But keys are usually positive 1-based index if generated relative to start.
+        // If user creates fresh, week 1 is start.
+        // We default to "Current Week" relative to Start Date.
+        return diffWeeks < 0 ? 0 : diffWeeks;
+    });
+
+    const jumpToWeek = (offset) => setViewOffset(offset);
+    const jumpToToday = () => {
+         const start = new Date(startDate);
+         const day = start.getDay();
+         let diff = (day === 1 ? 0 : (day === 0 ? 1 : (day >= 5 ? 8 - day : 1 - day)));
+         start.setDate(start.getDate() + diff);
+         const now = new Date();
+         const weekDiff = Math.floor((now - start) / (7 * 24 * 60 * 60 * 1000));
+         setViewOffset(weekDiff < 0 ? 0 : weekDiff);
+    };
     const [confirmDialog, setConfirmDialog] = useState({
         isOpen: false,
         title: '',
         message: '',
-        onConfirm: null,
-        type: 'warning' // 'warning', 'danger', 'info'
+        type: 'warning',
+        onConfirm: () => { }
     });
+
+    // --- Live Clock & Shift Logic ---
+    const [now, setNow] = useState(new Date());
+    useEffect(() => {
+        const timer = setInterval(() => setNow(new Date()), 1000);
+        return () => clearInterval(timer);
+    }, []);
+    
+    const getShiftStatus = (date) => {
+        const h = date.getHours();
+        if (h >= 6 && h < 14) return { label: 'Shift A (Morning)', color: 'text-emerald-500', bg: 'bg-emerald-500/10 border-emerald-500/20' };
+        if (h >= 14 && h < 22) return { label: 'Shift B (Evening)', color: 'text-amber-500', bg: 'bg-amber-500/10 border-amber-500/20' };
+        return { label: 'Shift C (Night)', color: 'text-violet-500', bg: 'bg-violet-500/10 border-violet-500/20' };
+    };
+    const currentShiftStatus = getShiftStatus(now);
+
+
+    const [isZenMode, setIsZenMode] = useState(false);
+
+    const toggleZenMode = React.useCallback(() => {
+        if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen().catch((e) => {
+                console.log(`Error attempting to enable fullscreen mode: ${e.message} (${e.name})`);
+            });
+            setIsZenMode(true);
+            setIsSidebarOpen(false); // Close sidebar for focus
+        } else {
+            if (document.exitFullscreen) {
+                document.exitFullscreen();
+            }
+            setIsZenMode(false);
+            setIsSidebarOpen(true); // Restore sidebar
+        }
+    }, []);
+
+    // --- Keyboard Shortcuts ---
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+                e.preventDefault();
+                if (e.shiftKey) redo();
+                else undo();
+            }
+            if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+                e.preventDefault();
+                redo();
+            }
+            if ((e.ctrlKey || e.metaKey) && e.key === 'd') {
+                e.preventDefault();
+                setIsDarkMode(prev => !prev);
+            }
+            if (e.altKey && e.code === 'KeyZ') { // Alt + Z for Zen Mode
+                e.preventDefault();
+                toggleZenMode();
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [historyIndex, history, toggleZenMode]); // Dependencies for undo/redo access
+
+
+
+
 
     const [showShortcutsMenu, setShowShortcutsMenu] = useState(false);
     const [soundEnabled, setSoundEnabled] = useState(() => localStorage.getItem('rota_sound') !== 'false');
+    // Zen Mode State moved up for shortcuts access
     const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('rota_onboarding_done'));
     const [onboardingStep, setOnboardingStep] = useState(0);
 
@@ -434,10 +543,10 @@ export default function ROTAScheduler() {
                 }
             }
 
-            // 2. Fetch Active Dept's Employees (Increased limit to 100)
+            // 2. Fetch Active Dept's Employees (Increased limit to 5000)
             const emps = await databases.listDocuments(DATABASE_ID, COLLECTIONS.EMPLOYEES, [
                 Query.equal('deptId', activeDeptId),
-                Query.limit(100)
+                Query.limit(5000)
             ]);
             if (emps.documents.length > 0) {
                 setEmployees(emps.documents.map(e => ({
@@ -448,19 +557,30 @@ export default function ROTAScheduler() {
                 })));
             }
 
-            // 3. Fetch Active Dept's Schedule (Increased limit to 100 to support 4 weeks)
+            // 3. Fetch Active Dept's Schedule (Increased limit to 5000 to support 4 weeks)
             const sched = await databases.listDocuments(DATABASE_ID, COLLECTIONS.SCHEDULE, [
                 Query.equal('deptId', activeDeptId),
-                Query.limit(100)
+                Query.limit(5000)
             ]);
             if (sched.documents.length > 0) {
                 const newSched = {};
                 sched.documents.forEach(s => {
-                    newSched[s.key] = {
-                        employees: JSON.parse(s.employeesJson),
-                        status: s.status,
-                        note: s.note
-                    };
+                    if (s.key === 'CONFIG') {
+                        try {
+                            const conf = JSON.parse(s.employeesJson);
+                            // Only update if value is present to allow graceful fallback
+                            if (conf.startDate) setStartDate(conf.startDate);
+                            if (conf.rotationWeeks) setRotationWeeks(conf.rotationWeeks);
+                            if (conf.shiftMode) setShiftMode(conf.shiftMode);
+                            if (conf.patternConfig) setPatternConfig(conf.patternConfig);
+                        } catch (e) { console.error("Config parse error", e); }
+                    } else {
+                        newSched[s.key] = {
+                            employees: JSON.parse(s.employeesJson),
+                            status: s.status,
+                            note: s.note
+                        };
+                    }
                 });
                 setSchedule(newSched);
 
@@ -483,7 +603,7 @@ export default function ROTAScheduler() {
         }
     };
 
-    const syncToCloud = async () => {
+    const syncToCloud = async (scheduleOverride = null) => {
         if (!DATABASE_ID || !isInitialLoaded) return;
 
         // Prevent sync if nothing significant changed (shallow check optimization)
@@ -492,36 +612,37 @@ export default function ROTAScheduler() {
         await ensureSession();
         setIsSyncing(true);
         try {
+            const promises = [];
+
             // 1. Differential Sync for Departments
-            // Check if department list length changed or names changed
             const deptsChanged = JSON.stringify(departments) !== JSON.stringify(lastSyncedDepartments.current);
             if (deptsChanged) {
                 // Handling Deletions for Departments
                 for (const syncedDept of lastSyncedDepartments.current) {
                     if (!departments.find(d => d.id === syncedDept.id)) {
-                        try {
-                            await databases.deleteDocument(DATABASE_ID, COLLECTIONS.DEPARTMENTS, syncedDept.id);
-                        } catch (e) { console.error("Error deleting dept:", e); }
+                        promises.push(
+                            databases.deleteDocument(DATABASE_ID, COLLECTIONS.DEPARTMENTS, syncedDept.id)
+                                .catch(e => console.error("Error deleting dept:", e))
+                        );
                     }
                 }
 
                 for (const dept of departments) {
-                    // Simple check: Upsert all if list changed (Departments are few, low cost)
-                    try {
-                        await databases.updateDocument(DATABASE_ID, COLLECTIONS.DEPARTMENTS, dept.id, {
+                    promises.push(
+                        databases.updateDocument(DATABASE_ID, COLLECTIONS.DEPARTMENTS, dept.id, {
                             name: dept.name,
                             type: dept.type,
                             color: dept.color
-                        });
-                    } catch (e) {
-                        if (e.code === 404) {
-                            await databases.createDocument(DATABASE_ID, COLLECTIONS.DEPARTMENTS, dept.id, {
-                                name: dept.name,
-                                type: dept.type,
-                                color: dept.color
-                            });
-                        }
-                    }
+                        }).catch(async (e) => {
+                            if (e.code === 404) {
+                                await databases.createDocument(DATABASE_ID, COLLECTIONS.DEPARTMENTS, dept.id, {
+                                    name: dept.name,
+                                    type: dept.type,
+                                    color: dept.color
+                                }).catch(err => console.error("Error creating dept:", err));
+                            }
+                        })
+                    );
                 }
                 lastSyncedDepartments.current = JSON.parse(JSON.stringify(departments));
             }
@@ -531,12 +652,10 @@ export default function ROTAScheduler() {
             for (const syncedEmp of lastSyncedEmployees.current) {
                 if (!employees.find(e => e.id === syncedEmp.id)) {
                     const docId = `${activeDeptId}_${syncedEmp.id}`;
-                    try {
-                        await databases.deleteDocument(DATABASE_ID, COLLECTIONS.EMPLOYEES, docId);
-                        console.log(`Deleted employee ${syncedEmp.name} from cloud.`);
-                    } catch (e) {
-                        if (e.code !== 404) console.error("Error deleting employee:", e);
-                    }
+                    promises.push(
+                        databases.deleteDocument(DATABASE_ID, COLLECTIONS.EMPLOYEES, docId)
+                            .catch(e => { if (e.code !== 404) console.error("Error deleting employee:", e); })
+                    );
                 }
             }
 
@@ -557,14 +676,15 @@ export default function ROTAScheduler() {
                         color: emp.color,
                         deptId: activeDeptId
                     };
-
-                    try {
-                        await databases.updateDocument(DATABASE_ID, COLLECTIONS.EMPLOYEES, docId, payload);
-                    } catch (e) {
-                        if (e.code === 404) {
-                            await databases.createDocument(DATABASE_ID, COLLECTIONS.EMPLOYEES, docId, payload);
-                        }
-                    }
+                    promises.push(
+                        databases.updateDocument(DATABASE_ID, COLLECTIONS.EMPLOYEES, docId, payload)
+                            .catch(async (e) => {
+                                if (e.code === 404) {
+                                    await databases.createDocument(DATABASE_ID, COLLECTIONS.EMPLOYEES, docId, payload)
+                                        .catch(err => console.error("Error creating employee:", err));
+                                }
+                            })
+                    );
                 }
             }
             // Update ref strictly
@@ -572,22 +692,15 @@ export default function ROTAScheduler() {
 
             // 3. Differential Sync for Schedule (The Heavy Hitter)
             let updateCount = 0;
-            const keysToCheck = new Set([...Object.keys(schedule), ...Object.keys(lastSyncedSchedule.current)]);
+            const currentScheduleState = scheduleOverride || schedule;
+            const keysToCheck = new Set([...Object.keys(currentScheduleState), ...Object.keys(lastSyncedSchedule.current)]);
 
             for (const key of keysToCheck) {
-                const currentCell = schedule[key];
+                const currentCell = currentScheduleState[key];
                 const syncedCell = lastSyncedSchedule.current[key];
+                const isDirty = !syncedCell || JSON.stringify(currentCell) !== JSON.stringify(syncedCell);
 
-                // Logic:
-                // 1. If only in current -> Create/Update (User added data)
-                // 2. If in both -> Diff check
-                // 3. If only in synced -> Data removed? (Appwrite logic currently doesn't delete, 
-                //    but if we want to sync "empty", we update it to empty list)
-
-                const isDirty = !syncedCell ||
-                    JSON.stringify(currentCell) !== JSON.stringify(syncedCell);
-
-                if (isDirty && currentCell) { // Only update if we have data to write
+                if (isDirty && currentCell) {
                     const docId = `${activeDeptId}_${key}`;
                     const payload = {
                         key,
@@ -596,22 +709,49 @@ export default function ROTAScheduler() {
                         note: currentCell.note,
                         deptId: activeDeptId
                     };
-
-                    try {
-                        await databases.updateDocument(DATABASE_ID, COLLECTIONS.SCHEDULE, docId, payload);
-                        updateCount++;
-                    } catch (e) {
-                        if (e.code === 404) {
-                            await databases.createDocument(DATABASE_ID, COLLECTIONS.SCHEDULE, docId, payload);
-                            updateCount++;
-                        }
-                    }
+                    
+                    updateCount++;
+                    promises.push(
+                        databases.updateDocument(DATABASE_ID, COLLECTIONS.SCHEDULE, docId, payload)
+                            .catch(async (e) => {
+                                if (e.code === 404) {
+                                    await databases.createDocument(DATABASE_ID, COLLECTIONS.SCHEDULE, docId, payload)
+                                        .catch(err => console.error("Error creating schedule:", err));
+                                } else {
+                                     console.warn(`Failed to sync cell ${key}`, e);
+                                }
+                            })
+                    );
                 }
             }
 
-            if (updateCount > 0) {
-                console.log(`Synced ${updateCount} schedule changes to cloud.`);
-                lastSyncedSchedule.current = JSON.parse(JSON.stringify(schedule));
+            // 4. Sync Config Metadata (Start Date, Rotation, etc.)
+            const configPayload = {
+                key: 'CONFIG',
+                deptId: activeDeptId,
+                employeesJson: JSON.stringify({
+                    startDate,
+                    rotationWeeks,
+                    shiftMode,
+                    patternConfig
+                }),
+                status: 'CONFIG',
+                note: 'System Metadata'
+            };
+            const configDocId = `${activeDeptId}_CONFIG`;
+            promises.push(
+                databases.updateDocument(DATABASE_ID, COLLECTIONS.SCHEDULE, configDocId, configPayload)
+                .catch(async (e) => {
+                     if (e.code === 404) await databases.createDocument(DATABASE_ID, COLLECTIONS.SCHEDULE, configDocId, configPayload);
+                })
+            );
+            
+            if (promises.length > 0) {
+                 await Promise.all(promises);
+                 if (updateCount > 0) {
+                     console.log(`Synced ${updateCount} changes to cloud.`);
+                     lastSyncedSchedule.current = JSON.parse(JSON.stringify(currentScheduleState));
+                 }
             }
 
         } catch (error) {
@@ -650,7 +790,7 @@ export default function ROTAScheduler() {
     useEffect(() => {
         const timer = setTimeout(() => {
             if (DATABASE_ID) syncToCloud();
-        }, 3000); // 3 second debounce
+        }, 1000); // 1 second debounce
         return () => clearTimeout(timer);
     }, [employees, schedule, departments, activeDeptId, shiftMode, rotationWeeks, startDate]);
 
@@ -767,18 +907,43 @@ export default function ROTAScheduler() {
     }, [showStatsModal]);
 
 
+    // Clear Schedule Handler
+    const clearSchedule = () => {
+        if (Object.keys(schedule).length === 0) {
+            showNotification("Schedule is already empty", "info");
+            return;
+        }
+
+        // Confirm Action
+        if (!window.confirm("Clear visible schedule? This only affects your local view. Refreshing will restore saved data from cloud.")) {
+            return;
+        }
+        
+        // Add to history
+        const newHistory = [...history.slice(0, historyIndex + 1), JSON.parse(JSON.stringify(schedule))];
+        if (newHistory.length > 50) newHistory.shift();
+        setHistory(newHistory);
+        setHistoryIndex(newHistory.length - 1);
+
+        setSchedule({}); // Clear local state
+        showNotification("Schedule cleared locally", "success");
+        playMicroInteraction('trash');
+    };
+
     // ==================== KEYBOARD SHORTCUTS ⌨️ ====================
     useEffect(() => {
         const handleKeyboardShortcut = (e) => {
             // Ignore shortcuts when typing in input fields
             const isInputActive = ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName);
             
+
             // Escape - Close any open modal
             if (e.key === 'Escape') {
                 if (showStatsModal) setShowStatsModal(false);
                 else if (showLeaveModal) setShowLeaveModal(false);
                 else if (showDeptModal) setShowDeptModal(false);
                 else if (showAllowanceModal) setShowAllowanceModal(false);
+                else if (showAdminDashboard) setShowAdminDashboard(false); // Changed from showUserModal
                 else if (showRules) setShowRules(false);
                 else if (showShortcutsMenu) setShowShortcutsMenu(false);
                 else if (confirmDialog.isOpen) setConfirmDialog({ ...confirmDialog, isOpen: false });
@@ -877,9 +1042,9 @@ export default function ROTAScheduler() {
         window.addEventListener('keydown', handleKeyboardShortcut);
         return () => window.removeEventListener('keydown', handleKeyboardShortcut);
     }, [
-        showStatsModal, showLeaveModal, showDeptModal, showAllowanceModal, 
-        showRules, showShortcutsMenu, confirmDialog, historyIndex, 
-        history.length, isDarkMode, isSidebarOpen
+        showStatsModal, showLeaveModal, showDeptModal, showAllowanceModal,
+        showRules, showShortcutsMenu, confirmDialog, historyIndex,
+        history.length, isDarkMode, isSidebarOpen, showAdminDashboard // Changed from showUserModal
     ]);
 
 
@@ -926,6 +1091,7 @@ export default function ROTAScheduler() {
     };
 
     const addNewDepartment = () => {
+        if (!perms.canManageDepts) return;
         if (!newDeptName.trim()) return;
         const id = newDeptName.toLowerCase().replace(/\s+/g, '_');
         if (departments.find(d => d.id === id)) {
@@ -1080,7 +1246,7 @@ export default function ROTAScheduler() {
             const key = `${targetWeek}-${targetDay}-${s}`;
             return schedule[key]?.employees?.some(e => e.id === emp.id);
         });
-        
+
         // If dragging to a shift where they ALREADY are, ignore
         if (dayShifts.includes(targetShift)) return 'existing';
         if (dayShifts.length > 0) return 'error'; // Already working another shift today
@@ -1090,7 +1256,7 @@ export default function ROTAScheduler() {
             let nextWeek = targetWeek;
             let nextDayIndex = DAYS.indexOf(targetDay) + 1;
             if (nextDayIndex >= 7) { nextDayIndex = 0; nextWeek++; }
-            
+
             if (nextWeek <= rotationWeeks) {
                 const nextDayName = DAYS[nextDayIndex];
                 const nextKeyA = `${nextWeek}-${nextDayName}-A`;
@@ -1208,6 +1374,7 @@ export default function ROTAScheduler() {
     };
 
     const handleSwapMode = (week, day, shift, employee) => {
+        if (!perms.canEdit) return;
         if (!selectedSwap) {
             setSelectedSwap({ week, day, shift, employee });
             showNotification(`Select another employee to swap with ${employee.name}`, 'info');
@@ -1307,6 +1474,7 @@ export default function ROTAScheduler() {
     };
 
     const addEmployee = () => {
+        if (!perms.canAddEmployee) return;
         if (!newEmployee.name.trim()) {
             showNotification('Please enter employee name', 'error');
             return;
@@ -1325,6 +1493,7 @@ export default function ROTAScheduler() {
     };
 
     const removeEmployee = (id) => {
+        if (!perms.canDelete) return;
         if (window.confirm('Remove this employee from the roster?')) {
             setEmployees(employees.filter(e => e.id !== id));
 
@@ -1351,9 +1520,10 @@ export default function ROTAScheduler() {
     };
 
     const handleDragStart = (e, employee) => {
+        if (!perms.canEdit) return;
         setDraggedEmployee(employee);
         e.dataTransfer.effectAllowed = 'copy';
-        
+
         // Hide default ghost image
         const img = new Image();
         img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
@@ -1368,12 +1538,14 @@ export default function ROTAScheduler() {
     };
 
     const handleDrop = (e, week, day, shift, suggestedEmp = null) => {
+        if (!perms.canEdit) return;
         if (e && e.preventDefault) e.preventDefault();
         const empToAssign = suggestedEmp || draggedEmployee;
         if (!empToAssign) return;
 
         const key = `${week}-${day}-${shift}`;
-        const cell = schedule[key];
+        // Robustness: If key doesn't exist (after clear), verify structure
+        const cell = schedule[key] || { employees: [], status: 'normal', note: '' };
 
         if (cell.status === 'holiday') {
             if (!window.confirm('This is a marked holiday. Assign employee anyway for holiday allowance?')) {
@@ -1386,8 +1558,10 @@ export default function ROTAScheduler() {
         const empIndex = currentEmployees.findIndex(e => e?.id === empToAssign.id);
 
         if (empIndex !== -1) {
-            currentEmployees.splice(empIndex, 1);
-            showNotification(`${empToAssign.name} removed from shift`);
+            // User requested specific feedback if already present
+            showNotification(`${empToAssign.name} is already present in this shift`, 'info'); 
+            playMicroInteraction('pop'); // Feedback sound
+            return; 
         } else {
             if (cell.status === 'leave') {
                 // Append replacement to existing employees instead of replacing them
@@ -1420,6 +1594,7 @@ export default function ROTAScheduler() {
     const handleDragLeave = () => setDragOverKey(null);
 
     const toggleHoliday = (week, day) => {
+        if (!perms.canEdit) return;
         const newSchedule = { ...schedule };
         ['A', 'B', 'C'].forEach(shift => {
             const key = `${week}-${day}-${shift}`;
@@ -1435,6 +1610,7 @@ export default function ROTAScheduler() {
     };
 
     const removeEmployeeFromCell = (week, day, shift, empId) => {
+        if (!perms.canEdit) return;
         const key = `${week}-${day}-${shift}`;
         const newSchedule = { ...schedule };
         const cell = newSchedule[key];
@@ -1539,14 +1715,19 @@ export default function ROTAScheduler() {
         return { updatedSchedule, holidayCount };
     };
 
-    const assignRotaAutomatically = async () => {
+    const assignRotaAutomatically = async (targetWeek = null) => {
+        if (!perms.canCreate) return;
         // Validation: Ensure generationMeta is an array (Safety check for legacy data)
         const currentMeta = Array.isArray(generationMeta) ? generationMeta : [];
 
-        // Overwrite Protection & Overlap Detection
+        // Overwrite Protection & Overlap Detection (Skip for single week updates usually, or keep simple)
+        // If updating single week, we are explicitly overwriting it.
         const targetStart = new Date(startDate);
-        const targetEnd = new Date(startDate);
-        targetEnd.setDate(targetEnd.getDate() + (rotationWeeks * 7) - 1);
+        if (targetWeek) {
+             targetStart.setDate(targetStart.getDate() + ((targetWeek - 1) * 7));
+        }
+        const targetEnd = new Date(targetStart);
+        targetEnd.setDate(targetEnd.getDate() + (targetWeek ? 6 : (rotationWeeks * 7) - 1));
 
         const overlappingGen = currentMeta.find(gen => {
             const genStart = new Date(gen.start);
@@ -1555,7 +1736,7 @@ export default function ROTAScheduler() {
             return (targetStart <= genEnd && targetEnd >= genStart);
         });
 
-        if (overlappingGen) {
+        if (overlappingGen && !targetWeek) { // Only warn for full generation, single week is explicit action
             const lastTime = new Date(overlappingGen.timestamp).toLocaleString('en-IN', {
                 dateStyle: 'medium',
                 timeStyle: 'short'
@@ -1566,40 +1747,47 @@ export default function ROTAScheduler() {
                 title: 'Overwrite Detection',
                 type: 'warning',
                 message: `This period (or part of it) was already generated on ${lastTime}. Re-generating will overwrite ALL existing assignments for these dates to ensure accurate calculations. Do you want to proceed?`,
-                onConfirm: executeAutoGeneration
+                onConfirm: () => executeAutoGeneration(targetWeek)
             });
             return;
         }
 
-        executeAutoGeneration();
+        executeAutoGeneration(targetWeek);
     };
 
-    const executeAutoGeneration = async () => {
+    const executeAutoGeneration = async (targetWeek = null) => {
         // Validation: Ensure generationMeta is an array (Safety check for legacy data)
         const currentMeta = Array.isArray(generationMeta) ? generationMeta : [];
         const targetStart = new Date(startDate);
-        const targetEnd = new Date(startDate);
-        targetEnd.setDate(targetEnd.getDate() + (rotationWeeks * 7) - 1);
+        if (targetWeek) {
+            targetStart.setDate(targetStart.getDate() + ((targetWeek - 1) * 7));
+        }
+        const targetEnd = new Date(targetStart);
+        targetEnd.setDate(targetEnd.getDate() + (targetWeek ? 6 : (rotationWeeks * 7) - 1));
 
-        const newSchedule = {};
+        // If targetWeek exists, we start with CURRENT schedule to preserve other weeks
+        const newSchedule = targetWeek ? { ...schedule } : {};
 
         if (activeDept.type === 'MES') {
             if (shiftMode === '3') {
-                generate3ShiftSchedule(newSchedule);
+                generate3ShiftSchedule(newSchedule, targetWeek);
             } else if (shiftMode === 'Pattern') {
-                generatePatternSchedule(newSchedule);
+                generatePatternSchedule(newSchedule, targetWeek);
             } else {
-                generate2ShiftSchedule(newSchedule);
+                generate2ShiftSchedule(newSchedule, targetWeek);
             }
         } else {
             if (shiftMode === 'Pattern') {
-                generatePatternSchedule(newSchedule);
+                generatePatternSchedule(newSchedule, targetWeek);
             } else {
-                generateGeneralSchedule(newSchedule);
+                generateGeneralSchedule(newSchedule, targetWeek);
             }
         }
 
         // Apply holidays automatically
+        // Note: applyHolidaysToSchedule currently iterates ALL weeks. 
+        // We should strictly only apply to the generated weeks to avoid weird side effects? 
+        // Actually, reapplying holidays to existing weeks is harmless (idempotent).
         const { updatedSchedule: autoSchedule, holidayCount } = applyHolidaysToSchedule(newSchedule);
 
         // Smart Merge: Merge new generated part into existing schedule
@@ -1624,17 +1812,20 @@ export default function ROTAScheduler() {
         setGenerationMeta(newMeta);
         setSchedule(mergedSchedule);
         saveToHistory(mergedSchedule);
+        
+        // Force immediate sync to cloud to prevent data loss on reload
+        syncToCloud(mergedSchedule);
 
-        const holidayMsg = holidayCount > 0 ? ` with ${holidayCount} holiday${holidayCount > 1 ? 's' : ''} applied` : '';
-        showNotification(`${activeDept.name} Rota Generated Successfully${holidayMsg}`);
+        const holidayMsg = holidayCount > 0 ? ` with holidays applied` : '';
+        const weekMsg = targetWeek ? `Week ${targetWeek}` : `${activeDept.name} Rota`;
+        showNotification(`${weekMsg} Updated Successfully${holidayMsg}`);
 
         // Close dialog if it was open
         setConfirmDialog(prev => ({ ...prev, isOpen: false }));
 
         // Celebration!
-        playMicroInteraction('magic');
         confetti({
-            particleCount: 150,
+            particleCount: targetWeek ? 50 : 150, // Less confetti for small update
             spread: 70,
             origin: { y: 0.6 },
             colors: ['#14b8a6', '#6366f1', '#f59e0b']
@@ -1666,7 +1857,7 @@ export default function ROTAScheduler() {
     };
 
 
-    const generatePatternSchedule = (newSchedule) => {
+    const generatePatternSchedule = (newSchedule, targetWeek = null) => {
         const sortedEmps = [...employees].filter(Boolean);
 
         // Build the sequence: e.g. [A, A, A, A, B, B, B, B, Off, Off]
@@ -1684,6 +1875,8 @@ export default function ROTAScheduler() {
             const startOffset = (empIdx * 2) % sequence.length;
 
             for (let week = 1; week <= rotationWeeks; week++) {
+                if (targetWeek && week !== targetWeek) continue;
+
                 DAYS.forEach((day, dIdx) => {
                     const dayOffset = (week - 1) * 7 + dIdx;
                     const shiftAtDay = sequence[(dayOffset + startOffset) % sequence.length];
@@ -1701,6 +1894,7 @@ export default function ROTAScheduler() {
 
         // Fill remaining empty cells to ensure state consistency
         for (let week = 1; week <= rotationWeeks; week++) {
+            if (targetWeek && week !== targetWeek) continue;
             DAYS.forEach(day => {
                 ['A', 'B', 'C'].forEach(shift => {
                     const key = `${week}-${day}-${shift}`;
@@ -1712,21 +1906,37 @@ export default function ROTAScheduler() {
         }
     };
 
-    const generateGeneralSchedule = (newSchedule) => {
+    const generateGeneralSchedule = (newSchedule, targetWeek = null) => {
         const sortedEmps = [...employees].filter(Boolean);
         let empPointer = 0;
 
         for (let week = 1; week <= rotationWeeks; week++) {
+            if (targetWeek && week !== targetWeek) {
+                // Advance pointer even if skipping, to maintain cycle consistency? 
+                // Decision: For general round-robin, if we regenerate only Week 3, 
+                // we probably want "fresh" randomness or standard cycle. 
+                // Let's just continue loop but not write. 
+                // Actually, to maintain true continuity, we need the pointer to evolve.
+                // But simplified: Just skipping write is safer.
+                
+                // Correction: Round robin relies on state. If we skip writing, empPointer still increments 
+                // if we iterate. So we MUST iterate logic but not write?
+                // Or better: Just calculate normally, but check targetWeek before writing.
+            }
+            // Simple logic:
+            
             DAYS.forEach(day => {
                 ['A', 'B', 'C'].slice(0, shiftMode === '3' ? 3 : 2).forEach(shift => {
-                    const key = `${week}-${day}-${shift}`;
+                   
                     const dailyTeam = [];
-
                     if (sortedEmps.length > 0) {
                         dailyTeam.push(sortedEmps[empPointer % sortedEmps.length]);
                         empPointer++;
                     }
 
+                    if (targetWeek && week !== targetWeek) return;
+
+                    const key = `${week}-${day}-${shift}`;
                     newSchedule[key] = {
                         employees: dailyTeam,
                         status: 'normal',
@@ -1737,12 +1947,32 @@ export default function ROTAScheduler() {
         }
     };
 
-    const generate3ShiftSchedule = (newSchedule) => {
-        const shiftA = employees.filter(e => e.shift === 'A');
-        const shiftB = employees.filter(e => e.shift === 'B');
-        const shiftC = employees.filter(e => e.shift === 'C');
+    const generate3ShiftSchedule = (newSchedule, targetWeek = null) => {
+        // 1. Identify Teams based on default verification
+        const teamA = employees.filter(e => e.shift === 'A');
+        const teamB = employees.filter(e => e.shift === 'B');
+        const teamC = employees.filter(e => e.shift === 'C');
 
         for (let week = 1; week <= rotationWeeks; week++) {
+            if (targetWeek && week !== targetWeek) continue;
+            
+            // 2. Determine Rotation for this week (Team Rotation: A -> B -> C)
+            // Changed to rotate every 2 WEEKS
+            const teamRotation = Math.floor((week - 1) / 2) % 3;
+            let shiftA, shiftB, shiftC;
+
+            if (teamRotation === 0) {
+                // Shift A = Team A, Shift B = Team B, Shift C = Team C
+                shiftA = teamA; shiftB = teamB; shiftC = teamC;
+            } else if (teamRotation === 1) {
+                // ROTATION 1: Shift A = Team B, Shift B = Team C, Shift C = Team A
+                shiftA = teamB; shiftB = teamC; shiftC = teamA;
+            } else {
+                // ROTATION 2: Shift A = Team C, Shift B = Team A, Shift C = Team B
+                shiftA = teamC; shiftB = teamA; shiftC = teamB;
+            }
+
+            // 3. Internal Rotation for Weekends (Who works within the team)
             let rotation = (week - 1) % 2;
 
             // Monday to Thursday
@@ -1769,16 +1999,41 @@ export default function ROTAScheduler() {
             newSchedule[`${week}-Sat-C`] = { employees: satC ? [satC] : [], status: 'normal', note: 'Friday OFF person works' };
 
             // SUNDAY
+            // SUNDAY
             const sunA = shiftA[rotation % shiftA.length];
+            
+            // Critical Rotation Check: 
+            // If Week X Sunday Night (ends Mon 7am) -> leads to Week X+1 Mon Morning (starts Mon 7am)
+            // We must ensure the person working Sunday Night is NOT in the team assigned to Shift A next week.
+            
+            const nextWeek = week + 1;
+            const nextRotIndex = Math.floor((nextWeek - 1) / 2) % 3;
+            let nextShiftATeam = [];
+            
+            if (nextRotIndex === 0) nextShiftATeam = teamA;
+            else if (nextRotIndex === 1) nextShiftATeam = teamB; // Matches Rotation 1 above
+            else nextShiftATeam = teamC; // Matches Rotation 2 above
+
+            const nextShiftAIds = nextShiftATeam.map(e => e.id);
+
+            // Candidates for Sunday Night (Usually from B and C teams)
             const bcTeam = [...shiftB, ...shiftC];
-            const sunNight = bcTeam.length > 0 ? bcTeam[(week - 1) % bcTeam.length] : null;
+            
+            // Filter out anyone who has Morning shift next Monday
+            const safeNightCandidates = bcTeam.filter(e => !nextShiftAIds.includes(e.id));
+            
+            // Fallback to bcTeam just in case (shouldn't happen with standard rotation but safety first)
+            const pool = safeNightCandidates.length > 0 ? safeNightCandidates : bcTeam;
+            
+            const sunNight = pool.length > 0 ? pool[(week - 1) % pool.length] : null;
+
             newSchedule[`${week}-Sun-A`] = { employees: sunA ? [sunA] : [], status: 'normal', note: '12hr shift (7am-7pm)' };
             newSchedule[`${week}-Sun-B`] = { employees: [], status: 'normal', note: '' };
             newSchedule[`${week}-Sun-C`] = { employees: sunNight ? [sunNight] : [], status: 'normal', note: '12hr shift (7pm-7am)' };
         }
     };
 
-    const generate2ShiftSchedule = (newSchedule) => {
+    const generate2ShiftSchedule = (newSchedule, targetWeek = null) => {
         let allEmployees = [...employees];
 
         const abhayraj = allEmployees.find(e => e.name === "Abhayraj");
@@ -1791,6 +2046,8 @@ export default function ROTAScheduler() {
         }
 
         for (let week = 1; week <= rotationWeeks; week++) {
+            if (targetWeek && week !== targetWeek) continue;
+            if (targetWeek && week !== targetWeek) continue;
             let rotation = (week - 1) % 3;
             const midPoint = Math.ceil(allEmployees.length / 2);
             const cycle = Math.floor((week - 1) / 2) % 2;
@@ -1877,10 +2134,10 @@ export default function ROTAScheduler() {
                                 cellStatus = 'holiday';
                             }
                         } else if (cell.status === 'leave') {
-                            const isEmpInLeaveList = cell.employees.some(e => e.id === emp.id); // Check if THIS emp is the one on leave? 
+                            const isEmpInLeaveList = cell.employees.some(e => e.id === emp.id); // Check if THIS emp is the one on leave?
                             // Wait, logic is: leave status is on the CELL. But cell.employees contains remaining.
                             // We need to know if THIS employee was supposed to be here but is on leave.
-                            // Actually, logic is: if status is leave, and note contains name? 
+                            // Actually, logic is: if status is leave, and note contains name?
                             // Simpler: If user marked leave, the employee is REMOVED from the cell in the current logic?
                             // NO, we updated logic to KEEP them?
                             // Updated Logic: We append replacement. The original might be there?
@@ -2017,7 +2274,7 @@ export default function ROTAScheduler() {
         while (currentDate <= endRange) {
             const dateStr = currentDate.toISOString().split('T')[0];
             const dayOfW = currentDate.getDay(); // 0-Sun, 1-Mon...
-            const dayName = DAYS[(dayOfW + 6) % 7]; 
+            const dayName = DAYS[(dayOfW + 6) % 7];
             const isWeekend = dayName === 'Sun' || dayName === 'Sat';
             const isHoliday = GREATER_NOIDA_HOLIDAYS_2026.some(h => h.date === dateStr);
 
@@ -2027,7 +2284,7 @@ export default function ROTAScheduler() {
             const d1 = Date.UTC(startAnchor.getFullYear(), startAnchor.getMonth(), startAnchor.getDate());
             const d2 = Date.UTC(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate());
             const diffDays = Math.floor((d2 - d1) / (1000 * 60 * 60 * 24));
-            
+
             if (diffDays >= 0) {
                 // Determine which week of the rotation we are in (1-indexed)
                 const effectiveWeek = (Math.floor(diffDays / 7) % rotationWeeks) + 1;
@@ -2141,6 +2398,8 @@ export default function ROTAScheduler() {
         showNotification('Outlook opened! Ctrl+V to paste table.', 'success');
     };
 
+
+
     const generateWhatsAppSummary = async () => {
         let msg = `???? *ROTA Schedule Summary*\n\n`;
 
@@ -2193,7 +2452,7 @@ export default function ROTAScheduler() {
                         if (shift === 'C') { startTime = '234500'; endTime = '070000'; } // Next day handle omitted for simplicity or handle +1 day
 
                         // Handle Wrap around for Shift C (simplified for now, same day or next day technically)
-                        // If Shift C ends next day, strict ICS requires next day date. 
+                        // If Shift C ends next day, strict ICS requires next day date.
                         // For simplicity, we just set duration or keep same day end to avoid logic complexity
 
                         cell.employees.forEach(emp => {
@@ -2803,6 +3062,16 @@ export default function ROTAScheduler() {
                 )
             }
 
+            {/* Admin Dashboard Modal */}
+            <AnimatePresence>
+                {showAdminDashboard && (
+                    <AdminDashboard
+                        isDarkMode={isDarkMode}
+                        setShowAdminDashboard={setShowAdminDashboard}
+                    />
+                )}
+            </AnimatePresence>
+
             {/* Animated Drag Preview - Premium & Minimal */}
             <AnimatePresence>
                 {draggedEmployee && (
@@ -2821,7 +3090,7 @@ export default function ROTAScheduler() {
                         exit={{ opacity: 0, scale: 0.8 }}
                         transition={{ duration: 0.2 }}
                     >
-                        <div 
+                        <div
                             className="w-5 h-5 rounded-full flex items-center justify-center text-white font-black text-[10px] shadow-sm"
                             style={{ backgroundColor: draggedEmployee.color }}
                         >
@@ -2831,7 +3100,7 @@ export default function ROTAScheduler() {
                     </motion.div>
                 )}
             </AnimatePresence>
-            
+
             {/* Dark Mode Glow Effect */}
             <AnimatePresence>
                 {isDarkMode && (
@@ -2896,7 +3165,7 @@ export default function ROTAScheduler() {
                                     delay: 0.1,
                                     ease: [0.4, 0, 0.2, 1]
                                 }}
-                                className="flex-1 flex flex-col overflow-y-auto custom-scrollbar min-w-[240px]"
+                                className="flex-1 flex flex-col overflow-y-auto [&::-webkit-scrollbar]:hidden scrollbar-none min-w-[240px]"
                             >
                                 <div className="p-4 pb-1">
                                     <h1 className={`text-xl font-black tracking-tighter flex items-center gap-2 ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>
@@ -2926,24 +3195,22 @@ export default function ROTAScheduler() {
                                             </select>
                                             <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 group-hover:text-slate-600 pointer-events-none transition-colors" size={14} />
                                         </div>
-                                        <button
-                                            onClick={() => setShowDeptModal(true)}
-                                            className="w-full py-1 flex items-center justify-center gap-1.5 text-[9px] font-bold text-teal-600 hover:text-teal-700 hover:bg-teal-50 rounded-lg transition-all"
-                                        >
-                                            <Plus size={10} /> Add New Department
-                                        </button>
+                                        {perms.canManageDepts && (
+                                            <button
+                                                onClick={() => setShowDeptModal(true)}
+                                                className="w-full py-1 flex items-center justify-center gap-1.5 text-[9px] font-bold text-teal-600 hover:text-teal-700 hover:bg-teal-50 rounded-lg transition-all"
+                                            >
+                                                <Plus size={10} /> Add New Department
+                                            </button>
+                                        )}
                                     </div>
                                 </div>
 
                                 {/* Sidebar Footer Controls */}
                                 <div className={`p-4 border-t space-y-2.5 flex-1 overflow-y-auto custom-scrollbar ${isDarkMode ? 'border-slate-800 bg-slate-900/50' : 'border-slate-200/60 bg-slate-50/50'}`}>
-                                    <button
-                                        onClick={assignRotaAutomatically}
-                                        className="w-full px-3 py-2 bg-gradient-to-r from-teal-600 to-emerald-600 text-white rounded-xl shadow-lg shadow-teal-500/20 hover:shadow-teal-500/40 hover:scale-[1.01] transition-all text-xs font-black flex items-center justify-center gap-2 active:scale-95 shimmer-btn"
-                                    >
-                                        <Calendar size={14} />
-                                        Generate {activeDept.name} ROTA
-                                    </button>
+                                    
+
+
 
                                     <button
                                         onClick={() => setShowStatsModal(true)}
@@ -2959,7 +3226,7 @@ export default function ROTAScheduler() {
                                         </div>
                                         <input
                                             type="email"
-                                            placeholder="  Transport DL Email"
+                                            placeholder="  Enter Transport DL Email"
                                             value={outlookDL}
                                             onChange={(e) => setOutlookDL(e.target.value)}
                                             className={`w-full bg-transparent border-none py-1.5 pr-8 text-[9px] font-bold focus:ring-0 outline-none transition-all ${isDarkMode ? 'text-slate-200 placeholder:text-slate-600' : 'text-slate-700 placeholder:text-slate-300'}`}
@@ -2973,38 +3240,61 @@ export default function ROTAScheduler() {
                                         </button>
                                     </div>
 
-                                    <div className="grid grid-cols-2 gap-2">
-                                        <button
-                                            onClick={() => setShowLeaveModal(true)}
-                                            className={`px-2 py-2 border rounded-xl transition-all font-bold text-[10px] flex items-center justify-center gap-1.5 shadow-sm ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
-                                        >
-                                            <UserX size={12} className="text-red-500" />
-                                            Leave
-                                        </button>
-                                        <button
-                                            onClick={() => setShowAllowanceModal(true)}
-                                            className={`px-2 py-2 border rounded-xl transition-all font-bold text-[10px] flex items-center justify-center gap-1.5 shadow-sm ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
-                                        >
-                                            <Calculator size={12} className="text-blue-500" />
-                                            Allowance
-                                        </button>
+
+
+                                    <div className="grid grid-cols-1 gap-2">
+                                        {perms.canCreate && (
+                                            <button
+                                                onClick={() => assignRotaAutomatically(null)}
+                                                className="w-full px-3 py-3 bg-gradient-to-r from-teal-500 via-emerald-500 to-teal-500 bg-[length:200%_auto] animate-gradient text-white rounded-xl shadow-[0_4px_14px_rgba(20,184,166,0.4)] hover:shadow-[0_6px_20px_rgba(20,184,166,0.6)] hover:scale-[1.02] transition-all text-xs font-black flex items-center justify-center gap-2 active:scale-95 group relative overflow-hidden"
+                                            >
+                                                <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300 backdrop-blur-[1px]"></div>
+                                                <Wand2 size={16} className="relative z-10 group-hover:rotate-12 transition-transform duration-300" />
+                                                <span className="relative z-10">Generate {activeDept.name} ROTA</span>
+                                            </button>
+                                        )}
                                     </div>
 
-                                    <button
-                                        onClick={exportToExcel}
-                                        className={`w-full px-2 py-2 border rounded-xl transition-all font-bold text-[10px] flex items-center justify-center gap-1.5 shadow-sm ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
-                                    >
-                                        <FileSpreadsheet size={12} className="text-green-600" />
-                                        Excel
-                                    </button>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        {perms.canEdit && (
+                                            <button
+                                                onClick={() => setShowLeaveModal(true)}
+                                                className={`px-2 py-2 border rounded-xl transition-all font-bold text-[10px] flex items-center justify-center gap-1.5 shadow-sm ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
+                                            >
+                                                <UserX size={12} className="text-red-500" />
+                                                Leave
+                                            </button>
+                                        )}
+                                        {perms.canEdit && (
+                                            <button
+                                                onClick={() => setShowAllowanceModal(true)}
+                                                className={`px-2 py-2 border rounded-xl transition-all font-bold text-[10px] flex items-center justify-center gap-1.5 shadow-sm ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
+                                            >
+                                                <Calculator size={12} className="text-blue-500" />
+                                                Allowance
+                                            </button>
+                                        )}
+                                    </div>
 
-                                    <button
-                                        onClick={exportToPDF}
-                                        className={`w-full px-2 py-2 border rounded-xl transition-all font-bold text-[10px] flex items-center justify-center gap-1.5 shadow-sm ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
-                                    >
-                                        <Download size={12} className="text-slate-500" />
-                                        PDF
-                                    </button>
+                                    {perms.canExport && (
+                                        <>
+                                            <button
+                                                onClick={exportToExcel}
+                                                className={`w-full px-2 py-2 border rounded-xl transition-all font-bold text-[10px] flex items-center justify-center gap-1.5 shadow-sm ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
+                                            >
+                                                <FileSpreadsheet size={12} className="text-green-600" />
+                                                Excel
+                                            </button>
+
+                                            <button
+                                                onClick={exportToPDF}
+                                                className={`w-full px-2 py-2 border rounded-xl transition-all font-bold text-[10px] flex items-center justify-center gap-1.5 shadow-sm ${isDarkMode ? 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700' : 'bg-white text-slate-700 border-slate-200/60 hover:bg-slate-50'}`}
+                                            >
+                                                <Download size={12} className="text-slate-500" />
+                                                PDF
+                                            </button>
+                                        </>
+                                    )}
 
                                     <div className="flex gap-3 pt-2">
                                         {/* Sync Status Indicator - Premium */}
@@ -3027,6 +3317,18 @@ export default function ROTAScheduler() {
                                     </div>
 
                                     <div className="flex gap-3 mt-1">
+                                        {perms.canEdit && (
+                                            <button
+                                                onClick={clearSchedule}
+                                                className={`flex-1 px-4 py-2.5 rounded-xl font-semibold transition-all duration-200 flex items-center justify-center gap-2 shadow-md active:scale-95 group ${isDarkMode
+                                                    ? 'bg-slate-800/40 text-slate-400 border border-slate-700/50 hover:bg-red-500/10 hover:text-red-400 hover:border-red-500/30'
+                                                    : 'bg-white text-slate-500 border border-slate-200 hover:bg-red-50 hover:text-red-500 hover:border-red-200'
+                                                    }`}
+                                                title="Clear visible schedule (Local only)"
+                                            >
+                                                <Trash2 size={16} className="group-hover:scale-110 transition-transform" />
+                                            </button>
+                                        )}
                                         <button
                                             onClick={undo}
                                             disabled={historyIndex <= 0}
@@ -3055,6 +3357,36 @@ export default function ROTAScheduler() {
                                         >
                                             <Undo2 size={16} className={historyIndex >= history.length - 1 ? 'opacity-50' : ''} />
                                         </button>
+                                    </div>
+
+                                    {/* User Profile & Logout */}
+                                    <div className={`mt-6 pt-4 border-t ${isDarkMode ? 'border-slate-800' : 'border-slate-200'}`}>
+
+
+
+                                        <div className={`p-2 rounded-2xl border flex items-center justify-between gap-2 shadow-sm ${isDarkMode ? 'bg-slate-800/50 border-slate-700/50' : 'bg-slate-50 border-slate-200'}`}>
+                                            <div className="flex items-center gap-3 min-w-0">
+                                                <div className={`w-9 h-9 shrink-0 rounded-xl flex items-center justify-center font-bold text-white shadow-sm ring-1 ring-inset ring-white/10 ${isDarkMode ? 'bg-slate-700' : 'bg-slate-400'}`}>
+                                                    {user?.name?.[0]?.toUpperCase() || 'U'}
+                                                </div>
+                                                <div className="min-w-0">
+                                                    <div className={`text-xs font-black truncate ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>{user?.name || 'User'}</div>
+                                                    <div className={`text-[9px] font-bold truncate uppercase tracking-wider ${isDarkMode ? 'text-teal-400' : 'text-teal-600'}`}>{role}</div>
+                                                </div>
+                                            </div>
+
+                                            <button
+                                                onClick={logout}
+                                                title="Sign Out"
+                                                className={`p-2 rounded-xl transition-all duration-300 border shadow-md group
+                                                ${isDarkMode 
+                                                    ? 'bg-gradient-to-br from-orange-900/40 to-amber-900/40 text-orange-400 border-orange-900/50 hover:border-orange-500/50 hover:text-orange-300 hover:shadow-[0_0_15px_rgba(249,115,22,0.2)]' 
+                                                    : 'bg-gradient-to-br from-orange-50 to-amber-50 text-orange-600 border-orange-200 hover:border-orange-300 hover:text-orange-700 hover:shadow-md'}
+                                                `}
+                                            >
+                                                <LogOut size={16} className="relative z-10 transition-transform duration-300 group-hover:-translate-x-0.5 group-active:scale-90" />
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
                             </motion.div>
@@ -3199,10 +3531,54 @@ export default function ROTAScheduler() {
                                     {isAutoTheme ? '🌓 Auto (6PM-6AM)' : '💡 Manual mode'}
                                 </div>
                             </div>
+
+                            {/* Zen Mode Button */}
+                            <button
+                                onClick={toggleZenMode}
+                                title={isZenMode ? "Exit Zen Mode (Alt+Z)" : "Enter Zen Mode (Alt+Z)"}
+                                className={`p-2 rounded-xl border transition-all shadow-sm active:scale-95 ${isZenMode ? 'bg-teal-500 text-white border-teal-600' : isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-400 hover:text-teal-400' : 'bg-white border-slate-200 text-slate-400 hover:text-teal-600'}`}
+                            >
+                                {isZenMode ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+                            </button>
+
+                            {perms.isAdmin && (
+                                <button
+                                    onClick={() => setShowAdminDashboard(true)}
+                                    title="Admin Dashboard"
+                                    className={`p-2 rounded-xl border transition-all shadow-sm active:scale-95 ${isDarkMode ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/20 hover:text-indigo-300' : 'bg-indigo-50 border-indigo-200 text-indigo-600 hover:bg-indigo-100'}`}
+                                >
+                                    <ShieldCheck size={18} />
+                                </button>
+                            )}
                         </div>
 
-                        <div className="text-[11px] font-bold text-slate-400 uppercase tracking-widest hidden lg:block">
-                            {new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}
+                        <div className={`hidden lg:flex items-center shadow-sm border rounded-xl overflow-hidden transition-all hover:shadow-md ${isDarkMode ? 'bg-slate-800/80 border-slate-700' : 'bg-white border-slate-200'}`}>
+                            {/* Date */}
+                            <div className={`px-3 py-1.5 flex flex-col items-center justify-center border-r ${isDarkMode ? 'border-slate-700/50' : 'border-slate-100'}`}>
+                                <span className="text-[8px] font-bold uppercase text-slate-400 leading-none mb-0.5">{now.toLocaleDateString('en-GB', { weekday: 'short' })}</span>
+                                <span className={`text-xs font-black leading-none ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>{now.getDate()} {now.toLocaleDateString('en-GB', { month: 'short' })}</span>
+                            </div>
+
+                            {/* Time */}
+                            <div className={`px-4 py-1.5 flex items-center justify-center gap-2 border-r min-w-[90px] ${isDarkMode ? 'border-slate-700/50' : 'border-slate-100'}`}>
+                                <Clock size={12} className="text-teal-500 animate-pulse" />
+                                <span className={`text-xs font-black tracking-widest font-mono tabular-nums ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                                    {now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                </span>
+                            </div>
+
+                            {/* Shift */}
+                            <div className={`px-4 py-1.5 flex items-center gap-2 ${isDarkMode ? currentShiftStatus.bg.split(' ')[0] : currentShiftStatus.bg.split(' ')[0]} bg-opacity-30`}>
+                                <div className={`w-2 h-2 rounded-full animate-ping ${currentShiftStatus.color.replace('text', 'bg')}`}></div>
+                                <div className="flex flex-col leading-none">
+                                    <span className={`text-[10px] font-black uppercase tracking-wider ${currentShiftStatus.color}`}>
+                                        {currentShiftStatus.label.split('(')[0]}
+                                    </span>
+                                    <span className={`text-[8px] font-bold opacity-70 ${currentShiftStatus.color}`}>
+                                        {currentShiftStatus.label.split('(')[1].replace(')', '')}
+                                    </span>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -3216,47 +3592,9 @@ export default function ROTAScheduler() {
                         }}
                         className="flex-1 overflow-auto p-3 lg:p-4 custom-scrollbar scroll-smooth"
                     >
-                        {/* Week Navigation bar */}
-                        <div className={`sticky top-0 z-30 mb-4 flex items-center gap-2 p-1 rounded-2xl border backdrop-blur-md shadow-lg ${isDarkMode ? 'bg-slate-900/80 border-slate-700/50' : 'bg-white/80 border-slate-200/60'}`}>
-                            <div className="px-2 py-0.5 text-[9px] font-black text-slate-400 uppercase tracking-widest border-r border-slate-700/20 mr-1">Quick Nav</div>
-                            {Array.from({ length: rotationWeeks }, (_, i) => (
-                                <a
-                                    key={i}
-                                    href={`#week-${i + 1}`}
-                                    className={`px-3 py-1 rounded-xl text-[10px] font-bold transition-all hover:scale-105 active:scale-95 ${isDarkMode ? 'text-slate-400 hover:text-teal-400 hover:bg-slate-800' : 'text-slate-500 hover:text-teal-600 hover:bg-teal-50'}`}
-                                >
-                                    W{i + 1}
-                                </a>
-                            ))}
-                        </div>
-                        <AnimatePresence>
-                            {!scrolled && (
-                                <motion.div 
-                                    key="inline-team-card"
-                                    initial={{ opacity: 0, scale: 0.98, height: 0, marginBottom: 0 }}
-                                    animate={{ 
-                                        opacity: 1, 
-                                        scale: 1, 
-                                        height: 'auto', 
-                                        marginBottom: 16,
-                                        transition: {
-                                            height: { duration: 0.3, ease: [0.4, 0, 0.2, 1] },
-                                            opacity: { duration: 0.2, delay: 0.1 },
-                                            scale: { duration: 0.2, delay: 0.1 }
-                                        }
-                                    }}
-                                    exit={{ 
-                                        opacity: 0, 
-                                        scale: 0.98,
-                                        height: 0,
-                                        marginBottom: 0,
-                                        transition: { 
-                                            height: { duration: 0.25, ease: "easeIn" },
-                                            opacity: { duration: 0.15 },
-                                            scale: { duration: 0.15 }
-                                        } 
-                                    }}
-                                    className={`sticky top-[52px] z-20 p-3 rounded-2xl border shadow-xl backdrop-blur-md overflow-hidden ${isDarkMode ? 'bg-slate-900/95 border-slate-700/50' : 'bg-white/95 border-slate-200/60'}`}
+                        {/* Old Quick Nav Bar Removed */}
+                                <div 
+                                    className={`relative z-20 mb-4 p-3 rounded-2xl border shadow-xl backdrop-blur-md overflow-hidden ${isDarkMode ? 'bg-slate-900/95 border-slate-700/50' : 'bg-white/95 border-slate-200/60'}`}
                                 >
                                     <h3 className="font-bold text-xs text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2">
                                         <div className={`w-6 h-6 rounded flex items-center justify-center ${isDarkMode ? 'bg-slate-700' : 'bg-teal-100'}`}><Users size={12} className="text-teal-600" /></div>
@@ -3271,6 +3609,8 @@ export default function ROTAScheduler() {
                                                     draggable
                                                     onDragStart={(e) => handleDragStart(e, emp)}
                                                     onDragEnd={handleDragEnd}
+                                                    onMouseEnter={() => setHighlightedEmpId(emp.id)}
+                                                    onMouseLeave={() => setHighlightedEmpId(null)}
                                                     className={`group pl-1.5 pr-3 py-1.5 rounded-xl border shadow-sm cursor-grab active:cursor-grabbing hover:shadow-md transition-all flex items-center gap-2.5 shrink-0 ${isDarkMode ? 'bg-slate-800 border-slate-700 hover:border-teal-500' : 'bg-white border-slate-200 hover:border-teal-300'}`}
                                                 >
                                                     <div
@@ -3283,18 +3623,23 @@ export default function ROTAScheduler() {
                                                         <div className={`font-bold text-xs leading-none mb-0.5 ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>{emp.name}</div>
                                                         <div className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">Shift {emp.shift}</div>
                                                     </div>
+                                                    {perms.canDelete && (
                                                     <button
                                                         onClick={() => removeEmployee(emp.id)}
                                                         className="opacity-0 group-hover:opacity-100 p-1 text-red-500 hover:bg-red-50 rounded transition-all"
                                                     >
                                                         <Trash2 size={12} />
                                                     </button>
+                                                    )}
                                                 </div>
                                             ))}
 
                                             <div className={`h-10 w-[1px] mx-1 shrink-0 ${isDarkMode ? 'bg-slate-700/50' : 'bg-slate-200'}`}></div>
 
+
+                                            
                                             {/* Inline Add Member */}
+                                            {perms.canAddEmployee && (
                                             <div className={`flex items-center gap-2 pl-2 pr-1 py-1 rounded-xl border min-w-[280px] shrink-0 h-10 ${isDarkMode ? 'bg-slate-900/50 border-slate-700' : 'bg-slate-100 border-slate-200'}`}>
                                                 <input
                                                     type="text"
@@ -3333,11 +3678,10 @@ export default function ROTAScheduler() {
                                                     <Plus size={16} />
                                                 </button>
                                             </div>
+                                            )}
                                         </div>
                                     </div>
-                                </motion.div>
-                            )}
-                        </AnimatePresence>
+                                </div>
 
                         {/* Floating Team Circle (Mobile/Scroll FAB) */}
                         <AnimatePresence>
@@ -3363,7 +3707,9 @@ export default function ROTAScheduler() {
                                                             draggable
                                                             onDragStart={(e) => handleDragStart(e, emp)}
                                                             onDragEnd={handleDragEnd}
-                                                            className={`p-2 rounded-xl border flex items-center gap-3 cursor-grab active:cursor-grabbing transition-all ${isDarkMode ? 'bg-slate-800/50 border-slate-700 hover:border-teal-500' : 'bg-slate-50 border-slate-200 hover:border-teal-400'}`}
+                                                            onMouseEnter={() => setHighlightedEmpId(emp.id)}
+                                                            onMouseLeave={() => setHighlightedEmpId(null)}
+                                                            className={`p-2 rounded-xl border flex items-center gap-3 cursor-grab active:cursor-grabbing transition-all hover:scale-105 active:scale-95 duration-200 holo-card ${isDarkMode ? 'bg-slate-800/50 border-slate-700 hover:border-teal-500' : 'bg-slate-50 border-slate-200 hover:border-teal-400'}`}
                                                         >
                                                             <div className="w-6 h-6 rounded-full flex items-center justify-center text-white font-black text-[9px]" style={{ backgroundColor: emp.color }}>
                                                                 {emp.name[0]}
@@ -3413,106 +3759,163 @@ export default function ROTAScheduler() {
 
                         {/* Schedule Table Container */}
                         <div className={`schedule-table rounded-2xl shadow-xl overflow-hidden border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-gray-200'}`}>
+                            {/* Navigation Header - Quick Scroll Spy */}
+                            <div className={`sticky top-0 z-40 px-4 py-3 border-b backdrop-blur-md flex items-center justify-between ${isDarkMode ? 'bg-slate-900/95 border-slate-800' : 'bg-white/95 border-slate-200'}`}>
+                                <div className="flex gap-2 overflow-x-auto pb-1 max-w-[600px] scrollbar-none">
+                                    {Array.from({ length: rotationWeeks }).map((_, i) => {
+                                        const start = getDateForCell(i, 0);
+                                        const end = getDateForCell(i, 6);
+                                        const label = `${formatDate(start)} - ${formatDate(end)}`;
+                                        
+                                        return (
+                                            <button
+                                                key={i}
+                                                onClick={() => document.getElementById(`week-${i + 1}`)?.scrollIntoView({ behavior: 'smooth' })}
+                                                className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider whitespace-nowrap transition-all border ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+                                            >
+                                                {label}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                                <div className="text-[10px] font-bold opacity-60 uppercase tracking-widest hidden md:block">
+                                    {employees.length} employees & {shiftMode} shifts
+                                </div>
+                            </div>
+
                             {Array.from({ length: rotationWeeks }, (_, weekIndex) => {
                                 const week = weekIndex + 1;
-                                const weekStartDate = getDateForCell(weekIndex, 0);
-                                const weekEndDate = getDateForCell(weekIndex, 6);
-
                                 return (
-                                    <div key={`week-${week}`} id={`week-${week}`} className={`border-b last:border-b-0 scroll-mt-24 ${isDarkMode ? 'border-slate-800' : 'border-slate-200'}`}>
-                                        <div className="bg-[#1e293b] text-white px-4 py-2 flex items-center justify-between">
-                                            <h3 className="text-sm font-black tracking-tight">Week {week} <span className="text-[10px] font-bold opacity-60 ml-2">({formatDate(weekStartDate)} - {formatDate(weekEndDate)})</span></h3>
-                                            <div className="text-[10px] font-bold opacity-60 uppercase tracking-widest">
-                                                {employees.length} employees & {shiftMode} shifts
-                                            </div>
-                                        </div>
-
-                                        <div className="overflow-x-auto custom-scrollbar relative">
-                                            <table className="w-full border-collapse table-fixed">
-                                                <thead>
-                                                    <tr className={`text-[10px] uppercase tracking-widest text-white ${isDarkMode ? 'bg-slate-950' : 'bg-slate-800'}`}>
-                                                        <th className={`px-3 py-2 text-left font-black border-r w-[65px] ${isDarkMode ? 'border-slate-800' : 'border-slate-700'}`}>Date</th>
-                                                        {['A', 'B', 'C'].slice(0, shiftMode === '3' ? 3 : 2).map((shift, i) => (
-                                                            <th key={shift} className={`px-4 py-3 text-center font-black border-r ${isDarkMode ? 'border-slate-800' : 'border-slate-700'}`}>
-                                                                <div className="flex items-center justify-center gap-2">
-                                                                    <span className={`w-2 h-2 rounded-full ${i === 0 ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : i === 1 ? 'bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.5)]' : 'bg-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.5)]'}`}></span>
-                                                                    Shift {shift}
+                                    <div key={`week-${week}`} id={`week-${week}`} className="scroll-mt-24 mb-8 last:mb-0">
+                                            <div className="overflow-x-auto custom-scrollbar relative">
+                                                <table className="w-full border-collapse table-fixed">
+                                                    <thead>
+                                                        <tr className={`text-[10px] uppercase tracking-widest text-white ${isDarkMode ? 'bg-slate-950' : 'bg-slate-800'}`}>
+                                                            <th className={`px-3 py-2 text-left font-black border-r w-[65px] ${isDarkMode ? 'border-slate-800' : 'border-slate-700'}`}>
+                                                                <div className="flex flex-col items-center gap-1">
+                                                                    <span className="opacity-80 text-[9px]">{formatDate(getDateForCell(weekIndex, 0))}</span>
+                                                                    {perms.canCreate && (
+                                                                        <button
+                                                                            onClick={() => assignRotaAutomatically(week)}
+                                                                            className={`p-1 rounded-md transition-all ${Object.keys(schedule).some(k => k.startsWith(`${week}-`)) 
+                                                                                ? 'bg-white/10 hover:bg-white/20 text-white/70 hover:text-white' 
+                                                                                : 'bg-teal-500 text-white hover:bg-teal-400 shadow-teal-500/50 shadow-sm'}`}
+                                                                            title={Object.keys(schedule).some(k => k.startsWith(`${week}-`)) ? "Regenerate Week" : "Generate ROTA"}
+                                                                        >
+                                                                            <Sparkles size={10} />
+                                                                        </button>
+                                                                    )}
                                                                 </div>
                                                             </th>
-                                                        ))}
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {DAYS.map((day, dayIndex) => {
-                                                        const date = getDateForCell(weekIndex, dayIndex);
-                                                        const isToday = formatDate(date) === formatDate(new Date());
-
-                                                        return (
-                                                            <tr key={`${week}-${day}`} className={`border-t group transition-all duration-200 ${isDarkMode ? 'border-slate-800 hover:bg-slate-800/50' : 'border-slate-50 hover:bg-slate-50'} ${isToday ? 'bg-teal-50/10' : ''}`}>
-                                                                <td className={`px-3 py-2 border-r ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-white'}`}>
-                                                                    <div className="flex flex-col items-center">
-                                                                        <div className={`text-sm font-black ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>{date.getDate()}</div>
-                                                                        <div className={`text-[10px] font-bold uppercase ${isDarkMode ? 'text-slate-400' : 'text-slate-700'}`}>{date.toLocaleDateString('en-GB', { month: 'short' })}</div>
-                                                                        <div className="text-[9px] font-bold text-slate-400 mt-0.5">{day}</div>
-                                                                        <button onClick={() => toggleHoliday(week, day)} className="mt-2 text-slate-300 hover:text-green-500 transition-colors p-1" title="Mark as holiday"><Palmtree size={12} /></button>
+                                                            {['A', 'B', 'C'].slice(0, shiftMode === '3' ? 3 : 2).map((shift, i) => (
+                                                                <th key={shift} className={`px-4 py-3 text-center font-black border-r ${isDarkMode ? 'border-slate-800' : 'border-slate-700'}`}>
+                                                                    <div className="flex items-center justify-center gap-2">
+                                                                        <span className={`w-2 h-2 rounded-full ${i === 0 ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : i === 1 ? 'bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.5)]' : 'bg-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.5)]'}`}></span>
+                                                                        Shift {shift}
                                                                     </div>
-                                                                </td>
-                                                                {['A', 'B', 'C'].slice(0, shiftMode === '3' ? 3 : 2).map(shift => {
-                                                                    const key = `${week}-${day}-${shift}`;
-                                                                    const cell = schedule[key] || { employees: [], status: 'normal', note: '' };
-                                                                    const prediction = checkPotentialConflict(draggedEmployee, week, day, shift);
-                                                                    const error = scheduleErrors[key];
+                                                                </th>
+                                                            ))}
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {DAYS.map((day, dayIndex) => {
+                                                            const date = getDateForCell(weekIndex, dayIndex);
+                                                            const isToday = formatDate(date) === formatDate(new Date());
 
-                                                                    return (
-                                                                        <td key={shift} data-cell-key={key} onDrop={(e) => { setDragOverKey(null); handleDrop(e, week, day, shift); }} onDragOver={(e) => handleDragOver(e, key)} onDragLeave={handleDragLeave} className={`schedule-cell px-2 py-1.5 border-r last:border-r-0 cursor-pointer relative group-hover:bg-opacity-50 drag-target-cell transition-all duration-300 ${isDarkMode ? 'border-slate-800' : 'border-slate-200'} ${dragOverKey === key ? 'drag-over-active' : ''} ${draggedEmployee ? (prediction === 'safe' ? 'bg-emerald-500/20 ring-2 ring-emerald-500/50 glow-predictive-safe shadow-[inset_0_0_30px_rgba(16,185,129,0.2)]' : prediction === 'warning' ? 'bg-amber-500/25 ring-2 ring-amber-500/60 shadow-[inset_0_0_30px_rgba(245,158,11,0.25)]' : prediction === 'error' ? 'bg-red-500/20 opacity-30 grayscale blur-[0.5px]' : prediction === 'existing' ? 'bg-slate-500/10 opacity-50' : '') : (error?.type === 'error' ? 'bg-red-50 ring-1 ring-red-500 ring-inset shadow-[inset_0_0_20px_rgba(239,68,68,0.1)]' : error?.type === 'warning' ? 'bg-amber-50/30 conflict-pulse' : cell.status === 'holiday' ? 'bg-green-50/20' : cell.status === 'leave' ? 'bg-orange-50/20' : isDarkMode ? 'bg-slate-900/50' : 'bg-white')}`}>
-                                                                            {draggedEmployee && (
-                                                                                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center pointer-events-none overflow-hidden">
-                                                                                    {prediction === 'safe' && <motion.div initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center"><CheckCircle2 size={14} className="text-emerald-500 mb-0.5" /><span className="text-[7px] font-black text-emerald-600 uppercase tracking-tighter">SAFE</span></motion.div>}
-                                                                                    {prediction === 'warning' && <motion.div initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center"><AlertCircle size={14} className="text-amber-500 mb-0.5" /><span className="text-[7px] font-black text-amber-600 uppercase tracking-tighter">REST WARN</span></motion.div>}
-                                                                                    {prediction === 'error' && <motion.div initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center opacity-40"><UserX size={14} className="text-red-500 mb-0.5" /><span className="text-[7px] font-black text-red-600 uppercase tracking-tighter">BLOCKED</span></motion.div>}
-                                                                                </div>
+                                                            return (
+                                                                <tr key={`${week}-${day}`} className={`border-t group hover:brightness-95 dark:hover:brightness-110 transition-colors duration-100 ${isDarkMode ? 'border-slate-800 hover:bg-slate-800' : 'border-slate-50 hover:bg-slate-50'} ${isToday ? 'bg-teal-50/10' : ''}`}>
+                                                                    <td className={`px-3 py-2 border-r ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-white'}`}>
+                                                                        <div className="flex flex-col items-center">
+                                                                            <div className={`text-sm font-black ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>{date.getDate()}</div>
+                                                                            <div className={`text-[10px] font-bold uppercase ${isDarkMode ? 'text-slate-400' : 'text-slate-700'}`}>{date.toLocaleDateString('en-GB', { month: 'short' })}</div>
+                                                                            <div className="text-[9px] font-bold text-slate-400 mt-0.5">{day}</div>
+                                                                            {perms.canEdit && (
+                                                                            <button onClick={() => toggleHoliday(week, day)} className="mt-2 text-slate-300 hover:text-green-500 transition-colors p-1" title="Mark as holiday"><Palmtree size={12} /></button>
                                                                             )}
-                                                                            {cell.status === 'holiday' ? (
-                                                                                <div className="flex flex-col items-center justify-center h-full opacity-80"><Palmtree size={16} className="text-green-500 mb-1" /><div className="text-[8px] font-bold uppercase tracking-tighter text-green-600 text-center px-1 leading-tight">{cell.note || 'Holiday'}</div></div>
-                                                                            ) : (
-                                                                                <div className="min-h-[40px] flex flex-col justify-center">
-                                                                                    <div className="flex flex-wrap gap-1 mb-1">
-                                                                                        <AnimatePresence>
-                                                                                            {cell.employees.filter(Boolean).map(emp => {
-                                                                                                const liveEmp = employees.find(e => e.id === emp.id) || emp;
-                                                                                                return (
-                                                                                                    <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.5 }} key={`${week}-${day}-${shift}-${liveEmp.id}`} className="employee-tag group/tag relative px-2 h-[22px] rounded-full text-[10px] font-black text-white shadow-sm ring-1 ring-black/5 flex items-center cursor-default transition-all duration-300" style={{ backgroundColor: liveEmp.color }}>
-                                                                                                        <span>{liveEmp.name}</span>
-                                                                                                        <div className="flex items-center gap-0.5 opacity-0 w-0 group-hover/tag:opacity-100 group-hover/tag:w-[42px] transition-all ml-0 group-hover/tag:ml-1.5 overflow-hidden">
-                                                                                                            <button onClick={(e) => { e.stopPropagation(); handleSwapMode(week, day, shift, liveEmp); }} className="rounded-full p-0.5 bg-black/20 hover:bg-black/40 text-white"><ArrowLeftRight size={8} strokeWidth={4} /></button>
-                                                                                                            <button onClick={(e) => { e.stopPropagation(); removeEmployeeFromCell(week, day, shift, liveEmp.id); }} className="rounded-full p-0.5 bg-black/20 hover:bg-black/40 text-white"><X size={8} strokeWidth={4} /></button>
-                                                                                                        </div>
-                                                                                                    </motion.div>
-                                                                                                );
-                                                                                            })}
-                                                                                        </AnimatePresence>
+                                                                        </div>
+                                                                    </td>
+                                                                    {['A', 'B', 'C'].slice(0, shiftMode === '3' ? 3 : 2).map(shift => {
+                                                                        const key = `${week}-${day}-${shift}`;
+                                                                        const cell = schedule[key] || { employees: [], status: 'normal', note: '' };
+                                                                        const prediction = checkPotentialConflict(draggedEmployee, week, day, shift);
+                                                                        const error = scheduleErrors[key];
+
+                                                                        return (
+                                                                            <td key={shift} data-cell-key={key} onDrop={(e) => { setDragOverKey(null); handleDrop(e, week, day, shift); }} onDragOver={(e) => handleDragOver(e, key)} onDragLeave={handleDragLeave} className={`schedule-cell px-2 py-1.5 border-r last:border-r-0 cursor-pointer relative group-hover:bg-opacity-50 drag-target-cell transition-all duration-300 ${isDarkMode ? 'border-slate-800' : 'border-slate-200'} ${dragOverKey === key ? 'drag-over-active' : ''} ${draggedEmployee ? (prediction === 'safe' ? 'bg-emerald-500/20 ring-2 ring-emerald-500/50 glow-predictive-safe shadow-[inset_0_0_30px_rgba(16,185,129,0.2)]' : prediction === 'warning' ? 'bg-amber-500/25 ring-2 ring-amber-500/60 shadow-[inset_0_0_30px_rgba(245,158,11,0.25)]' : prediction === 'error' ? 'bg-red-500/20 opacity-30 grayscale blur-[0.5px]' : prediction === 'existing' ? 'bg-slate-500/10 opacity-50' : '') : (error?.type === 'error' ? 'bg-red-50 ring-1 ring-red-500 ring-inset shadow-[inset_0_0_20px_rgba(239,68,68,0.1)]' : error?.type === 'warning' ? 'bg-amber-50/30 conflict-pulse' : cell.status === 'holiday' ? 'bg-green-50/20' : cell.status === 'leave' ? 'bg-orange-50/20' : isDarkMode ? 'bg-slate-900/50' : 'bg-white')}`}>
+                                                                                {draggedEmployee && (
+                                                                                    <div className="absolute inset-0 z-10 flex flex-col items-center justify-center pointer-events-none overflow-hidden">
+                                                                                        {prediction === 'safe' && <motion.div initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center"><CheckCircle2 size={14} className="text-emerald-500 mb-0.5" /><span className="text-[7px] font-black text-emerald-600 uppercase tracking-tighter">SAFE</span></motion.div>}
+                                                                                        {prediction === 'warning' && <motion.div initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center"><AlertCircle size={14} className="text-amber-500 mb-0.5" /><span className="text-[7px] font-black text-amber-600 uppercase tracking-tighter">REST WARN</span></motion.div>}
+                                                                                        {prediction === 'error' && <motion.div initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center opacity-40"><UserX size={14} className="text-red-500 mb-0.5" /><span className="text-[7px] font-black text-red-600 uppercase tracking-tighter">BLOCKED</span></motion.div>}
                                                                                     </div>
-                                                                                    {(cell.employees.length < (shiftMode === '3' ? 2 : 3) || cell.status === 'leave') && (
-                                                                                        <button onClick={(e) => { e.stopPropagation(); getBestReplacements(week, day, shift); }} className="mt-1 flex items-center gap-1 text-[8px] font-black text-teal-600 uppercase transition-colors"><Sparkles size={10} /> Suggest</button>
-                                                                                    )}
-                                                                                    {cellSuggestions?.key === key && (
-                                                                                        <motion.div initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} className={`absolute top-full left-0 z-50 w-full min-w-[120px] shadow-2xl border-2 border-teal-500 rounded-xl p-2 mt-1 ${isDarkMode ? 'bg-slate-900' : 'bg-white'}`}>
-                                                                                            <div className="flex items-center justify-between mb-2"><span className="text-[9px] font-black uppercase text-teal-500 flex items-center gap-1"><Sparkles size={10} /> Best Matches</span><button onClick={(e) => { e.stopPropagation(); setCellSuggestions(null); }} className="text-slate-400 hover:text-slate-600"><X size={12} /></button></div>
-                                                                                            <div className="space-y-1.5">{cellSuggestions.list.map(sEmp => (<button key={sEmp.id} onClick={(e) => { e.stopPropagation(); handleDrop(null, week, day, shift, sEmp); setCellSuggestions(null); }} className={`w-full text-left p-1.5 text-[10px] font-bold rounded-lg flex items-center justify-between transition-colors ${isDarkMode ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-teal-50 text-slate-700'}`}><div className="flex items-center gap-2"><div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: sEmp.color }}></div>{sEmp.name}</div><div className="text-[8px] opacity-60 font-black">LOAD: {sEmp.workload}</div></button>))}</div>
-                                                                                        </motion.div>
-                                                                                    )}
-                                                                                    {error && <div className={`mt-1 flex items-center gap-1 font-black text-[9px] uppercase tracking-tighter ${error.type === 'error' ? 'text-red-600' : 'text-amber-600'}`}><AlertCircle size={10} /> {error.message}</div>}
-                                                                                </div>
-                                                                            )}
-                                                                        </td>
-                                                                    );
-                                                                })}
-                                                            </tr>
-                                                        );
-                                                    })}
-                                                </tbody>
-                                            </table>
-                                        </div>
+                                                                                )}
+                                                                                {cell.status === 'holiday' ? (
+                                                                                    <div className="flex flex-col items-center justify-center h-full opacity-80"><Palmtree size={16} className="text-green-500 mb-1" /><div className="text-[8px] font-bold uppercase tracking-tighter text-green-600 text-center px-1 leading-tight">{cell.note || 'Holiday'}</div></div>
+                                                                                ) : (
+                                                                                    <div className="min-h-[40px] flex flex-col justify-center">
+                                                                                        <AnimatePresence>
+                                                                                            <div className="flex flex-wrap gap-1 mb-1">
+                                                                                                {cell.employees.filter(Boolean).map(emp => {
+                                                                                                        const liveEmp = employees.find(e => e.id === emp.id) || emp;
+                                                                                                        const isHighlighted = highlightedEmpId === liveEmp.id;
+                                                                                                        const isDimmed = highlightedEmpId && !isHighlighted;
+                                                                                                        
+                                                                                                        return (
+                                                                                                            <motion.div
+                                                                                                                layout
+                                                                                                                transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                                                                                                                initial={{ opacity: 0, scale: 0.8 }}
+                                                                                                                animate={{ opacity: isDimmed ? 0.3 : 1, scale: isHighlighted ? 1.05 : (isDimmed ? 0.9 : 1), filter: isDimmed ? 'grayscale(100%) blur(0.5px)' : 'none' }}
+                                                                                                                exit={{ opacity: 0, scale: 0.5 }}
+                                                                                                                key={`${week}-${day}-${shift}-${liveEmp.id}`}
+                                                                                                                onMouseEnter={() => setHighlightedEmpId(liveEmp.id)}
+                                                                                                                onMouseLeave={() => setHighlightedEmpId(null)}
+                                                                                                                className={`employee-tag group/tag relative px-2 py-1 min-h-[28px] h-auto rounded-md text-[10px] font-black text-white shadow-sm ring-1 ring-black/5 flex items-center cursor-default overflow-hidden ${isHighlighted ? 'z-50 shadow-[0_0_15px_rgba(20,184,166,0.6)] ring-2 ring-white brightness-110' : ''}`}
+                                                                                                                style={{ backgroundColor: liveEmp.color }}
+                                                                                                            >
+                                                                                                                <div className="flex flex-col justify-center leading-tight whitespace-nowrap flex-shrink-0">
+                                                                                                                    <span className="block">{liveEmp.name}</span>
+                                                                                                                    <span className="text-[7px] font-bold opacity-80">{day === 'Sun' ? (shift === 'A' ? '7:00am-7:00pm' : '7:00pm-7:00am') : (SHIFTS[shift].label.match(/\((.*?)\)/)?.[1] || '')}</span>
+                                                                                                                </div>
+
+                                                                                                                <AnimatePresence mode='wait'>
+                                                                                                                    {isHighlighted && (
+                                                                                                                        <motion.div
+                                                                                                                            initial={{ width: 0, opacity: 0, marginLeft: 0 }}
+                                                                                                                            animate={{ width: 'auto', opacity: 1, marginLeft: 6 }}
+                                                                                                                            exit={{ width: 0, opacity: 0, marginLeft: 0 }}
+                                                                                                                            transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                                                                                                                            className="flex items-center gap-1 overflow-hidden"
+                                                                                                                        >
+                                                                                                                            <button onClick={(e) => { e.stopPropagation(); handleSwapMode(week, day, shift, liveEmp); }} className="rounded-full p-0.5 bg-black/20 hover:bg-black/40 text-white flex-shrink-0"><ArrowLeftRight size={10} strokeWidth={3} /></button>
+                                                                                                                            <button onClick={(e) => { e.stopPropagation(); removeEmployeeFromCell(week, day, shift, liveEmp.id); }} className="rounded-full p-0.5 bg-black/20 hover:bg-black/40 text-white flex-shrink-0"><X size={10} strokeWidth={3} /></button>
+                                                                                                                        </motion.div>
+                                                                                                                    )}
+                                                                                                                </AnimatePresence>
+                                                                                                            </motion.div>
+                                                                                                        );
+                                                                                                })}
+                                                                                            </div>
+                                                                                        </AnimatePresence>
+
+                                                                                        {cellSuggestions?.key === key && (
+                                                                                            <motion.div initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} className={`absolute top-full left-0 z-50 w-full min-w-[120px] shadow-2xl border-2 border-teal-500 rounded-xl p-2 mt-1 ${isDarkMode ? 'bg-slate-900' : 'bg-white'}`}>
+                                                                                                <div className="flex items-center justify-between mb-2"><span className="text-[9px] font-black uppercase text-teal-500 flex items-center gap-1"><Sparkles size={10} /> Best Matches</span><button onClick={(e) => { e.stopPropagation(); setCellSuggestions(null); }} className="text-slate-400 hover:text-slate-600"><X size={12} /></button></div>
+                                                                                                <div className="space-y-1.5">{cellSuggestions.list.map(sEmp => (<button key={sEmp.id} onClick={(e) => { e.stopPropagation(); handleDrop(null, week, day, shift, sEmp); setCellSuggestions(null); }} className={`w-full text-left p-1.5 text-[10px] font-bold rounded-lg flex items-center justify-between transition-colors ${isDarkMode ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-teal-50 text-slate-700'}`}><div className="flex items-center gap-2"><div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: sEmp.color }}></div>{sEmp.name}</div><div className="text-[8px] opacity-60 font-black">LOAD: {sEmp.workload}</div></button>))}</div>
+                                                                                            </motion.div>
+                                                                                        )}
+                                                                                        {error && <div className={`mt-1 flex items-center gap-1 font-black text-[9px] uppercase tracking-tighter ${error.type === 'error' ? 'text-red-600' : 'text-amber-600'}`}><AlertCircle size={10} /> {error.message}</div>}
+                                                                                    </div>
+                                                                                )}
+                                                                            </td>
+                                                                        );
+                                                                    })}
+                                                                </tr>
+                                                            );
+                                                        })}
+                                                    </tbody>
+                                                </table>
+                                            </div>
                                     </div>
                                 );
                             })}
@@ -3775,6 +4178,16 @@ export default function ROTAScheduler() {
                 )}
             </AnimatePresence>
 
+
+            <AnimatePresence>
+                {showAdminDashboard && (
+                    <AdminDashboard 
+                        isOpen={showAdminDashboard} 
+                        onClose={() => setShowAdminDashboard(false)} 
+                        isDarkMode={isDarkMode} 
+                    />
+                )}
+            </AnimatePresence>
 
             <style>{`
         @keyframes slide-in {

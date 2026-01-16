@@ -1,4 +1,4 @@
-import { Client, Databases, Account } from 'appwrite';
+import { Client, Databases, Account, Teams } from 'appwrite';
 
 const projectId = import.meta.env.VITE_APPWRITE_PROJECT_ID;
 
@@ -12,10 +12,12 @@ const client = new Client()
 
 export const databases = new Databases(client);
 export const account = new Account(client);
+export const teams = new Teams(client);
 
 export const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID;
 export const COLLECTIONS = {
     DEPARTMENTS: import.meta.env.VITE_APPWRITE_COLLECTION_DEPARTMENTS,
     EMPLOYEES: import.meta.env.VITE_APPWRITE_COLLECTION_EMPLOYEES,
-    SCHEDULE: import.meta.env.VITE_APPWRITE_COLLECTION_SCHEDULE
+    SCHEDULE: import.meta.env.VITE_APPWRITE_COLLECTION_SCHEDULE,
+    USERS: 'users' // Manually created collection
 };
