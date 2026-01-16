@@ -5,9 +5,17 @@
 @tailwind utilities;
 
 @layer base {
+  html {
+    transition: background-color 0.3s;
+  }
+  html.dark {
+    background-color: #020617; /* matches slate-950 */
+  }
+
   body {
     @apply antialiased text-slate-900;
     font-family: 'Manrope', sans-serif;
+    zoom: 0.9;
   }
 }
 
@@ -294,4 +302,101 @@ select option {
 
 .holo-card:hover::after {
   animation: shine 0.75s ease-in-out;
+}
+
+/* --- PRINT OPTIMIZATION (PREMIUM) --- */
+
+@media print {
+  @page {
+    margin: 10mm;
+    size: landscape;
+  }
+
+  /* 1. Hide UI Chrome (Sidebar, Header, Buttons, Modals) */
+  aside, 
+  .header-controls,
+  button, 
+  .fixed,
+  .overflow-hidden > button, /* Floating buttons inside cells */
+  .shimmer-btn,
+  .toast-container,
+  [role="dialog"] {
+    display: none !important;
+  }
+
+  /* 2. Reset Body & Layout for Paper */
+  body {
+    background: white !important;
+    color: black !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  #root, main {
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    height: auto !important;
+    max-width: none !important;
+    background: white !important;
+  }
+
+  /* 3. Disable Dark Mode Overrides */
+  .dark {
+     color-scheme: light; 
+     background: white !important;
+     color: black !important;
+  }
+
+  .dark td, .dark th {
+    background: white !important;
+    color: black !important;
+    border-color: #cbd5e1 !important; /* slate-300 */
+  }
+  
+  /* 4. Ensure Table & Scroll Areas are fully Visible */
+  .overflow-auto, .overflow-y-auto, .overflow-x-auto, .custom-scrollbar {
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+    width: 100% !important;
+  }
+
+  /* 5. Employee Tags - Force Colors to Print */
+  .employee-tag {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    box-shadow: none !important;
+    border: 1px solid rgba(0,0,0,0.1) !important;
+    page-break-inside: avoid;
+  }
+  
+  /* Ensure text on colored tags remains white/readable */
+  .text-white {
+    color: white !important;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+  }
+
+  /* 6. Pretty Table Borders */
+  table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+  }
+  
+  td, th {
+    border: 1px solid #94a3b8 !important; /* Slate 400 for crisp lines */
+    padding: 4px !important;
+    page-break-inside: avoid;
+  }
+
+  /* 7. Hide "Add" Placeholders */
+  .group\/cell:hover .opacity-0 {
+    display: none !important;
+  }
+  
+  /* 8. Typography Adjustments */
+  h1, h2, h3, h4 {
+    color: black !important;
+  }
 }

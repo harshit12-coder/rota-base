@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'; // Version 1.1 
+import React, { useState, useEffect, useRef } from 'react'; // Version 1.1 
 import { Calendar, Users, Download, FileSpreadsheet, Undo2, Redo2, Plus, Trash2, Clock, AlertCircle, CheckCircle2, UserX, Palmtree, Send, BarChart3, Smartphone, ChevronDown, ChevronUp, Briefcase, Settings2, ShieldCheck, X, ChevronLeft, ChevronRight, Sun, Moon, Sparkles, ArrowLeftRight, FileSearch, Globe, Calculator, Wallet, Mail, Grab, Wand2, MessageCircle, ScanEye, Maximize2, Minimize2 } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
@@ -76,6 +76,136 @@ const DEFAULT_DEPARTMENTS = [
 
 
 
+
+// --- Magic Cursor Component (High-Performance Sparkles) ---
+const MagicCursor = ({ isActive }) => {
+    const canvasRef = useRef(null);
+    const particles = useRef([]);
+    const cursor = useRef({ x: 0, y: 0 });
+    const cursorHistory = useRef({ x: 0, y: 0 });
+
+    useEffect(() => {
+        if (!isActive) return; // Stop if disabled
+
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        
+        const resize = () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        };
+        window.addEventListener('resize', resize);
+        resize();
+
+        const onMouseMove = (e) => {
+            cursor.current = { x: e.clientX, y: e.clientY };
+        };
+        window.addEventListener('mousemove', onMouseMove);
+
+        let animationFrameId;
+        
+        const render = () => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear screen
+
+            // Initial cursor sync
+            if (cursorHistory.current.x === 0 && cursorHistory.current.y === 0) {
+                cursorHistory.current.x = cursor.current.x;
+                cursorHistory.current.y = cursor.current.y;
+            }
+
+            // Interpolate for smoothness
+            const dx = cursor.current.x - cursorHistory.current.x;
+            const dy = cursor.current.y - cursorHistory.current.y;
+            cursorHistory.current.x += dx * 0.25;
+            cursorHistory.current.y += dy * 0.25;
+
+            // Emit particles based on movement - REDUCED QUANTITY & DARK MODE ONLY logic handled by parent prop
+            if ((Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) && Math.random() > 0.7) { // 70% throttle (less particles)
+                const count = 1; // Always 1 particle at a time, no bursts
+                for (let i = 0; i < count; i++) {
+                     // Colors: Gold, Emerald, Violet, Blue, Rose
+                    const colors = ['#F59E0B', '#10B981', '#8B5CF6', '#3B82F6', '#F43F5E'];
+                    const color = colors[Math.floor(Math.random() * colors.length)];
+                    const isSparkle = Math.random() > 0.85; // 15% chance of star (cleaner)
+
+                    particles.current.push({
+                        x: cursor.current.x + (Math.random() - 0.5) * 15,
+                        y: cursor.current.y + (Math.random() - 0.5) * 15,
+                        vx: (Math.random() - 0.5) * 0.5,
+                        vy: (Math.random() - 0.5) * 0.5 + 0.3, // Gravity down
+                        life: 1.0,
+                        decay: Math.random() * 0.02 + 0.02, // Faster decay
+                        color: color,
+                        size: isSparkle ? Math.random() * 4 + 2 : Math.random() * 2 + 1, // Smaller size
+                        type: isSparkle ? 'star' : 'circle',
+                        rotation: Math.random() * Math.PI * 2,
+                        rotateSpeed: (Math.random() - 0.5) * 0.1
+                    });
+                }
+            }
+
+            // Draw Loop
+            particles.current.forEach((p, index) => {
+                p.x += p.vx;
+                p.y += p.vy;
+                p.rotation += p.rotateSpeed;
+                p.life -= p.decay;
+                p.size *= 0.96;
+
+                if (p.life <= 0 || p.size < 0.2) {
+                    particles.current.splice(index, 1);
+                } else {
+                    ctx.save();
+                    ctx.translate(p.x, p.y);
+                    ctx.rotate(p.rotation);
+                    ctx.globalAlpha = p.life;
+                    ctx.fillStyle = p.color;
+                    
+                    // Add glow - slightly reduced
+                    ctx.shadowBlur = 8;
+                    ctx.shadowColor = p.color;
+
+                    if (p.type === 'star') {
+                        // Draw 4-point star
+                        ctx.beginPath();
+                        const spikes = 4;
+                        const outerRadius = p.size;
+                        const innerRadius = p.size * 0.4;
+                        for (let i = 0; i < spikes * 2; i++) {
+                            const r = (i % 2 === 0) ? outerRadius : innerRadius;
+                            const angle = (Math.PI / spikes) * i;
+                            ctx.lineTo(Math.cos(angle) * r, Math.sin(angle) * r);
+                        }
+                        ctx.closePath();
+                        ctx.fill();
+                    } else {
+                        // Draw Circle
+                        ctx.beginPath();
+                        ctx.arc(0, 0, p.size, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+
+                    ctx.restore();
+                }
+            });
+
+            animationFrameId = requestAnimationFrame(render);
+        };
+
+        render();
+
+        return () => {
+            window.removeEventListener('resize', resize);
+            window.removeEventListener('mousemove', onMouseMove);
+            cancelAnimationFrame(animationFrameId);
+        };
+    }, [isActive]);
+
+    if (!isActive) return null;
+
+    return <canvas ref={canvasRef} className="pointer-events-none fixed inset-0 z-[99999]" />;
+};
 
 export default function ROTAScheduler() {
     const { user, role, logout } = useAuth();
@@ -157,17 +287,11 @@ export default function ROTAScheduler() {
         const saved = localStorage.getItem(getSKey('startDate'));
         if (saved) return saved;
 
-        // Smart Default: Always start on a Monday
+        // Smart Default: Always start on a Monday of the CURRENT week
         const d = new Date();
-        if (d.getDay() === 0) {
-            // If Sunday, default to tomorrow (Monday)
-            d.setDate(d.getDate() + 1);
-        } else {
-            // If Mon-Sat, snap to this week's Monday
-            const day = d.getDay();
-            const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-            d.setDate(diff);
-        }
+        const day = d.getDay();
+        const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Adjust when day is Sunday
+        d.setDate(diff);
         return d.toISOString().split('T')[0];
     });
 
@@ -176,19 +300,10 @@ export default function ROTAScheduler() {
         let start = new Date(startDate);
         // Snap to NEAREST Monday
         const day = start.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
-        let diff = 0;
-
-        if (day === 1) {
-            diff = 0; // Already Monday
-        } else if (day === 0) {
-            diff = 1; // Sunday -> Next Monday (+1)
-        } else if (day >= 5) {
-            diff = 8 - day; // Fri(5)->+3, Sat(6)->+2
-        } else {
-            diff = 1 - day; // Tue(2)->-1, Wed(3)->-2, Thu(4)->-3
-        }
-
-        start.setDate(start.getDate() + diff);
+        // Snap to NEAREST Monday (Start of the current week Standard Logic)
+        // Mon(1) -> 0. Tue(2) -> -1 ... Sun(0) -> -6
+        const diff = (day + 6) % 7; 
+        start.setDate(start.getDate() - diff);
 
         const dayOffset = weekIndex * 7 + dayIndex;
         const date = new Date(start);
@@ -219,11 +334,7 @@ export default function ROTAScheduler() {
     const [newEmployee, setNewEmployee] = useState({ name: '', shift: 'A' });
     const [showLeaveModal, setShowLeaveModal] = useState(false);
     const [leaveData, setLeaveData] = useState({ employee: '', week: 1, day: 'Mon' });
-    const [outlookDL, setOutlookDL] = useState(() => {
-        const saved = localStorage.getItem(getSKey('outlookDL'));
-        if (!saved && activeDeptId === 'mes') return localStorage.getItem('rota_outlookDL') || '';
-        return saved || '';
-    });
+
     const [showStatsModal, setShowStatsModal] = useState(false);
     const [showRules, setShowRules] = useState(false);
     const [showDeptModal, setShowDeptModal] = useState(false); // Department adding modal
@@ -232,6 +343,20 @@ export default function ROTAScheduler() {
     const [isSyncing, setIsSyncing] = useState(false);
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('rota_theme') === 'dark');
+    // Sync dark class to HTML element for global styles
+    useEffect(() => {
+        if (isDarkMode) document.documentElement.classList.add('dark');
+        else document.documentElement.classList.remove('dark');
+        localStorage.setItem('rota_theme', isDarkMode ? 'dark' : 'light');
+    }, [isDarkMode]);
+
+    const [isMagicEnabled, setIsMagicEnabled] = useState(() => localStorage.getItem('rota_magic_cursor') !== 'false');
+    useEffect(() => {
+        localStorage.setItem('rota_magic_cursor', isMagicEnabled);
+        if (isMagicEnabled) showNotification('✨ Magic Effects Enabled', 'success');
+        else showNotification('Magic Effects Disabled', 'default');
+    }, [isMagicEnabled]);
+
     const [isAutoTheme, setIsAutoTheme] = useState(() => localStorage.getItem('rota_auto_theme') === 'true');
     const [dragOverKey, setDragOverKey] = useState(null);
     const [selectedSwap, setSelectedSwap] = useState(null); // { week, day, shift, empId }
@@ -700,28 +825,41 @@ export default function ROTAScheduler() {
                 const syncedCell = lastSyncedSchedule.current[key];
                 const isDirty = !syncedCell || JSON.stringify(currentCell) !== JSON.stringify(syncedCell);
 
-                if (isDirty && currentCell) {
+                if (isDirty) {
                     const docId = `${activeDeptId}_${key}`;
-                    const payload = {
-                        key,
-                        employeesJson: JSON.stringify(currentCell.employees),
-                        status: currentCell.status,
-                        note: currentCell.note,
-                        deptId: activeDeptId
-                    };
                     
-                    updateCount++;
-                    promises.push(
-                        databases.updateDocument(DATABASE_ID, COLLECTIONS.SCHEDULE, docId, payload)
-                            .catch(async (e) => {
-                                if (e.code === 404) {
-                                    await databases.createDocument(DATABASE_ID, COLLECTIONS.SCHEDULE, docId, payload)
-                                        .catch(err => console.error("Error creating schedule:", err));
-                                } else {
-                                     console.warn(`Failed to sync cell ${key}`, e);
-                                }
-                            })
-                    );
+                    if (currentCell) {
+                        // Case: Update or Create
+                        const payload = {
+                            key,
+                            employeesJson: JSON.stringify(currentCell.employees),
+                            status: currentCell.status,
+                            note: currentCell.note,
+                            deptId: activeDeptId
+                        };
+                        
+                        updateCount++;
+                        promises.push(
+                            databases.updateDocument(DATABASE_ID, COLLECTIONS.SCHEDULE, docId, payload)
+                                .catch(async (e) => {
+                                    if (e.code === 404) {
+                                        await databases.createDocument(DATABASE_ID, COLLECTIONS.SCHEDULE, docId, payload)
+                                            .catch(err => console.error("Error creating schedule:", err));
+                                    } else {
+                                         console.warn(`Failed to sync cell ${key}`, e);
+                                    }
+                                })
+                        );
+                    } else {
+                        // Case: Delete (Key no longer exists in current schedule)
+                        promises.push(
+                            databases.deleteDocument(DATABASE_ID, COLLECTIONS.SCHEDULE, docId)
+                                .catch(e => { 
+                                    // If 404, it's already gone, which is fine
+                                    if (e.code !== 404) console.error("Error deleting old schedule cell:", e); 
+                                })
+                        );
+                    }
                 }
             }
 
@@ -812,7 +950,7 @@ export default function ROTAScheduler() {
     useEffect(() => { localStorage.setItem(getSKey('shiftMode'), shiftMode); }, [shiftMode, activeDeptId]);
     useEffect(() => { localStorage.setItem(getSKey('rotationWeeks'), rotationWeeks.toString()); }, [rotationWeeks, activeDeptId]);
     useEffect(() => { localStorage.setItem(getSKey('startDate'), startDate); }, [startDate, activeDeptId]);
-    useEffect(() => { localStorage.setItem(getSKey('outlookDL'), outlookDL); }, [outlookDL, activeDeptId]);
+
     useEffect(() => { localStorage.setItem(getSKey('patternConfig'), JSON.stringify(patternConfig)); }, [patternConfig, activeDeptId]);
     useEffect(() => { localStorage.setItem(getSKey('generationMeta'), JSON.stringify(generationMeta)); }, [generationMeta, activeDeptId]);
 
@@ -2312,89 +2450,139 @@ export default function ROTAScheduler() {
     };
 
     const shareWithTransport = async () => {
-        if (!outlookDL.trim()) {
-            showNotification('Please enter Outlook DL Email in sidebar first', 'error');
-            return;
-        }
+        // --- CONFIGURATION: UPDATE THESE EMAILS ---
+        const RECIPIENT_EMAIL = "transport@kimbal.io,ram.swarth@kimbal.io,transport.help@kimbal.io"; 
+        const CC_EMAILS = "mes.support@kimbal.io,naveen.kumar@kimbal.io";
+        // ------------------------------------------
 
-        // 1. Generate HTML Table for Clipboard
-        let htmlTable = `<table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px;">
-            <thead>
-                <tr style="background-color: #f3f4f6;">
-                    <th style="border: 1px solid #d1d5db; padding: 8px; text-align: left;">Date</th>
-                    <th style="border: 1px solid #d1d5db; padding: 8px; text-align: left;">Day</th>
-                    ${employees.map(emp => `<th style="border: 1px solid #d1d5db; padding: 8px; text-align: center;">${emp.name}</th>`).join('')}
-                </tr>
-            </thead>
-            <tbody>`;
+        // 1. Generate Premium HTML Table for Clipboard
+        const headerBg = "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)";
+        const accentColor = "#14b8a6"; // Teal
+
+        let htmlTable = `
+        <div style="font-family: 'Segoe UI', user-select: none; Helvetica, Arial, sans-serif; max-width: 100%; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);">
+            <!-- Header -->
+            <div style="background: ${headerBg}; padding: 24px 32px; color: white;">
+                <h2 style="margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.5px;">ROTA Schedule</h2>
+                <p style="margin: 8px 0 0; opacity: 0.8; font-size: 14px;">Week Starting: <strong>${formatDate(new Date(startDate))}</strong> • ${activeDept.name}</p>
+            </div>
+
+            <!-- Table Container -->
+            <div style="padding: 0; background-color: white;">
+                <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                    <thead>
+                        <tr style="background-color: #f8fafc; border-bottom: 2px solid #e2e8f0;">
+                            <th style="padding: 16px; text-align: left; color: #64748b; font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: 1px;">Date</th>
+                            <th style="padding: 16px; text-align: left; color: #64748b; font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: 1px;">Day</th>
+                            ${employees.map(emp => `<th style="padding: 16px; text-align: center; color: #475569; font-weight: 700; border-left: 1px solid #f1f5f9;">${emp.name}</th>`).join('')}
+                        </tr>
+                    </thead>
+                    <tbody>`;
+
+        // Filter Config: Start filter from the 'startDate' selected by user
+        // Note: getDateForCell snaps to Monday, so grid always starts Monday.
+        // We filter rows that are strictly BEFORE the user's selected date.
+        const exportStart = new Date(startDate);
+        exportStart.setHours(0, 0, 0, 0);
 
         for (let week = 1; week <= rotationWeeks; week++) {
             DAYS.forEach((day, dayIndex) => {
                 const dateObj = getDateForCell(week - 1, dayIndex);
+                
+                // --- FILTER LOGIC ---
+                const checkDate = new Date(dateObj);
+                checkDate.setHours(0, 0, 0, 0);
+                if (checkDate < exportStart) return; // Skip days before selected start
+                // --------------------
+
                 const dateStr = formatDate(dateObj);
                 const isSunday = day === 'Sun';
-                const rowBg = isSunday ? '#fef9c3' : '#ffffff'; // Yellow for Sun
-
-                htmlTable += `<tr style="background-color: ${rowBg};">
-                    <td style="border: 1px solid #d1d5db; padding: 8px;">${dateStr}</td>
-                    <td style="border: 1px solid #d1d5db; padding: 8px; font-weight: ${isSunday ? 'bold' : 'normal'};">${day}</td>`;
+                const rowBg = isSunday ? '#fffbeb' : (dayIndex % 2 === 0 ? '#ffffff' : '#fcfcfc'); // Subtle stripe
+                
+                htmlTable += `<tr style="background-color: ${rowBg}; border-bottom: 1px solid #f1f5f9;">
+                    <td style="padding: 12px 16px; color: #334155; font-weight: 600; border-right: 1px solid #f1f5f9;">${dateStr}</td>
+                    <td style="padding: 12px 16px; color: ${isSunday ? '#ef4444' : '#64748b'}; font-weight: ${isSunday ? '800' : '600'}; border-right: 1px solid #f1f5f9;">${day}</td>`;
 
                 employees.forEach(emp => {
-                    let cellText = 'OFF';
-                    let cellStyle = 'color: #9ca3af;'; // Gray text for OFF
-
+                    let cellContent = `<span style="opacity: 0.3; font-weight: 500;">OFF</span>`;
+                    
                     ['A', 'B', 'C'].forEach(shift => {
                         const key = `${week}-${day}-${shift}`;
                         const cell = schedule[key] || { employees: [], status: 'normal' };
 
-                        // Check logic similar to Excel export
-                        if (cell.status === 'holiday' && schedule[`${week}-${day}-A`]?.status === 'holiday') {
-                            cellText = 'HOLIDAY';
-                            cellStyle = 'color: #ef4444; font-weight: bold;';
-                        } else if (cell.employees.find(e => e.id === emp.id)) {
-                            // Working this shift
-                            cellText = SHIFTS[shift].label.split('(')[1].replace(')', '');
-                            cellStyle = day === 'Sun' ? 'color: #000; font-weight: bold;' : 'color: #000;';
-                            if (cell.status === 'leave') cellStyle = 'color: #f97316; font-weight: bold;'; // Warning
+                        const isWorking = cell.employees.some(e => e.id === emp.id);
+                        
+                        if (isWorking) {
+                            let badgeColor = "#94a3b8"; // Default
+                            let badgeText = SHIFTS[shift].label.match(/\((.*?)\)/)?.[1] || shift;
+                            
+                            if (shift === 'A') badgeColor = "#059669"; // Emerald
+                            if (shift === 'B') badgeColor = "#d97706"; // Amber
+                            if (shift === 'C') badgeColor = "#6366f1"; // Indigo
+                            if (day === 'Sun') { badgeColor = "#dc2626"; badgeText += "*"; } // Red for Sunday
+
+                            cellContent = `<span style="display: inline-block; padding: 4px 12px; border-radius: 4px; background-color: ${badgeColor}; color: white; font-family: sans-serif; font-weight: bold; font-size: 11px; text-decoration: none; border: 1px solid ${badgeColor}; mso-hide: all;">${badgeText}</span><!--[if mso]><i style="background-color:${badgeColor}; color:white; font-style:normal; font-weight:bold; padding:4px 12px; border-radius:4px;">${badgeText}</i><![endif]-->`;
                         } else if (cell.status === 'leave' && cell.note.includes(emp.name)) {
-                            cellText = 'ON LEAVE';
-                            cellStyle = 'color: #ef4444; font-weight: bold;';
-                        }
-                        if (cell?.status === 'holiday') {
-                            cellText = cell.note || 'HOLIDAY';
-                            cellStyle = 'color: #ef4444; font-weight: bold;';
+                             cellContent = `<span style="color: #f97316; font-weight: 700; font-size: 11px;">LEAVE</span>`;
                         }
                     });
 
-                    htmlTable += `<td style="border: 1px solid #d1d5db; padding: 8px; text-align: center; ${cellStyle}">${cellText}</td>`;
+                    // Holiday Override
+                     if (schedule[`${week}-${day}-A`]?.status === 'holiday') {
+                         // Only override if not working
+                         if (cellContent.includes('OFF')) cellContent = `<span style="color: #ef4444; font-weight: 700; font-size: 10px; letter-spacing: 0.5px;">HOLIDAY</span>`;
+                     }
+
+                    htmlTable += `<td style="padding: 8px; text-align: center; border-left: 1px solid #f1f5f9;">${cellContent}</td>`;
                 });
                 htmlTable += `</tr>`;
             });
         }
-        htmlTable += `</tbody></table>`;
+        htmlTable += `
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- Footer -->
+            <div style="background-color: #f8fafc; padding: 16px 32px; border-top: 1px solid #e2e8f0; text-align: right;">
+                <p style="margin: 0; font-size: 11px; color: #94a3b8;">Generated by <strong>Rota-Base</strong> • <a href="#" style="color: #14b8a6; text-decoration: none;">View Live</a></p>
+            </div>
+        </div>`;
 
-        // 2. Copy to Clipboard (HTML + Text)
+        // 2. Copy to Clipboard (Rich HTML)
         try {
             const blobHtml = new Blob([htmlTable], { type: 'text/html' });
-            const blobText = new Blob([employees.map(e => e.name).join('\t')], { type: 'text/plain' }); // Fallback simple text
+            // Plain text fallback
+            const blobText = new Blob(["Please check the Rota Schedule in HTML format."], { type: 'text/plain' }); 
+            
             await navigator.clipboard.write([
                 new ClipboardItem({
                     'text/html': blobHtml,
                     'text/plain': blobText
                 })
             ]);
-            showNotification('Table copied to clipboard!', 'success');
+            showNotification('✨ Premium Table copied!', 'success');
         } catch (err) {
             console.error('Clipboard failed', err);
-            showNotification('Could not copy table automatically', 'error');
+            showNotification('Could not update clipboard', 'error');
         }
 
-        // 3. Open Outlook Draft
-        const subject = `Rota Schedule - Week Starting ${formatDate(new Date(startDate))}`;
-        const body = `Hi Team,%0D%0A%0D%0APlease see the roster table below (Paste here using Ctrl+V).%0D%0A%0D%0ARegards,%0D%0ARota Admin`;
+        // 3. Open Outlook
+        const startObj = new Date(startDate);
+        // End Date is determined by Grid Logic (Anchor + Weeks)
+        const gridEndDate = getDateForCell(rotationWeeks - 1, 6);
+        const dateRangeStr = `${startObj.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} - ${gridEndDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
+        
+        const subject = `Rota Schedule (${activeDept.name}): ${dateRangeStr}`;
+        const body = `Hi Team,%0D%0A%0D%0AHere is the updated roster schedule.%0D%0A%0D%0A[PASTE TABLE HERE by pressing Ctrl+V]%0D%0A%0D%0ARegards,%0D%0A${user?.name || 'Rota Admin'}`;
+        
+        // Construct mailto link with CC
+        let mailtoLink = `mailto:${RECIPIENT_EMAIL}?subject=${subject}&body=${body}`;
+        if (CC_EMAILS && CC_EMAILS.trim()) {
+            mailtoLink += `&cc=${CC_EMAILS}`;
+        }
 
-        window.location.href = `mailto:${outlookDL}?subject=${subject}&body=${body}`;
-
+        window.location.href = mailtoLink;
         showNotification('Outlook opened! Ctrl+V to paste table.', 'success');
     };
 
@@ -3121,7 +3309,10 @@ export default function ROTAScheduler() {
                 )}
             </AnimatePresence>
 
-            <div className="flex h-screen overflow-hidden relative">
+            {/* Magical Cursor Effect - Only in Dark Mode & Enabled */}
+            <MagicCursor isActive={isDarkMode && isMagicEnabled} />
+
+            <div className="flex w-full overflow-hidden relative" style={{ height: '111.111vh' }}>
                 {/* Sidebar */}
                 <motion.aside
                     initial={{ width: 280 }}
@@ -3134,7 +3325,7 @@ export default function ROTAScheduler() {
                         damping: 30,
                         mass: 0.7
                     }}
-                    className={`sidebar ${isDarkMode ? 'bg-slate-900 border-r border-slate-800' : 'bg-white border-r border-slate-200'} z-30 flex flex-col h-screen overflow-hidden relative ${isSidebarOpen
+                    className={`sidebar ${isDarkMode ? 'bg-slate-900 border-r border-slate-800' : 'bg-white border-r border-slate-200'} z-30 flex flex-col h-full overflow-hidden relative ${isSidebarOpen
                         ? `${isDarkMode ? 'shadow-[4px_0_20px_rgba(0,0,0,0.4)]' : 'shadow-[4px_0_20px_rgba(0,0,0,0.08)]'}`
                         : 'shadow-none'
                         } transition-shadow duration-300`}
@@ -3220,29 +3411,34 @@ export default function ROTAScheduler() {
                                         View Stats & Fairness
                                     </button>
 
-                                    <div className={`relative flex items-center group transition-all duration-300 rounded-xl border shadow-sm ${isDarkMode ? 'bg-slate-800/50 border-slate-700/50 focus-within:border-orange-500/50 focus-within:bg-slate-800' : 'bg-white border-slate-200/60 focus-within:border-orange-400 focus-within:shadow-md'}`}>
-                                        <div className={`pl-2 transition-colors ${isDarkMode ? 'text-slate-500 group-focus-within:text-orange-400' : 'text-slate-400 group-focus-within:text-orange-500'}`}>
-                                            <Mail size={12} strokeWidth={2.5} />
-                                        </div>
-                                        <input
-                                            type="email"
-                                            placeholder="  Enter Transport DL Email"
-                                            value={outlookDL}
-                                            onChange={(e) => setOutlookDL(e.target.value)}
-                                            className={`w-full bg-transparent border-none py-1.5 pr-8 text-[9px] font-bold focus:ring-0 outline-none transition-all ${isDarkMode ? 'text-slate-200 placeholder:text-slate-600' : 'text-slate-700 placeholder:text-slate-300'}`}
-                                        />
-                                        <button
-                                            onClick={shareWithTransport}
-                                            title="Open Outlook Draft"
-                                            className={`absolute right-1 p-0.5 rounded-lg transition-all active:scale-90 ${isDarkMode ? 'bg-orange-500/10 text-orange-400 hover:bg-orange-500/20' : 'bg-orange-50 text-orange-600 hover:bg-orange-100'}`}
-                                        >
-                                            <Send size={10} strokeWidth={2.5} />
-                                        </button>
-                                    </div>
+                                    <button
+                                        onClick={shareWithTransport}
+                                        className={`w-full px-3 py-2.5 border rounded-xl transition-all text-xs font-bold flex items-center justify-center gap-2 shadow-sm relative overflow-hidden group ${isDarkMode ? 'bg-orange-500/10 text-orange-400 border-orange-500/30 hover:bg-orange-500/20' : 'bg-orange-50 text-orange-600 border-orange-200/60 hover:bg-orange-100'}`}
+                                    >
+                                        <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000"></div>
+                                        <Send size={16} />
+                                        Send to Transport
+                                    </button>
 
 
 
                                     <div className="grid grid-cols-1 gap-2">
+                                        {/* Start Date Picker - Added for Visibility */}
+                                        {perms.canCreate && (
+                                            <div className={`px-3 py-2 border rounded-xl flex items-center justify-between transition-all group ${isDarkMode ? 'bg-slate-800 border-slate-700 hover:border-slate-600' : 'bg-white border-slate-200/60 hover:border-teal-200'}`}>
+                                                <div className="flex items-center gap-2">
+                                                    <Calendar size={14} className={isDarkMode ? 'text-teal-400' : 'text-teal-600'} />
+                                                    <span className={`text-[10px] font-bold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>Start Date</span>
+                                                </div>
+                                                <input 
+                                                    type="date" 
+                                                    value={startDate}
+                                                    onChange={(e) => setStartDate(e.target.value)}
+                                                    className={`bg-transparent border-none text-xs font-black focus:ring-0 p-0 text-right cursor-pointer w-[110px] ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}
+                                                />
+                                            </div>
+                                        )}
+
                                         {perms.canCreate && (
                                             <button
                                                 onClick={() => assignRotaAutomatically(null)}
@@ -3481,7 +3677,7 @@ export default function ROTAScheduler() {
                             <div className={`flex items-center gap-2 p-1 rounded-xl border transition-all ${isDarkMode ? 'bg-slate-800/50 border-slate-700/50 hover:bg-slate-800' : 'bg-slate-100/80 border-slate-200/50 hover:bg-slate-100'}`}>
                                 <div className={`px-3 py-1 rounded-lg shadow-sm border flex items-center gap-2 text-xs font-bold ${isDarkMode ? 'bg-slate-900 border-slate-700 text-slate-200' : 'bg-white border-slate-100 text-slate-700'}`}>
                                     <Clock size={14} className="text-teal-500" />
-                                    Rotation
+                                    Duration
                                 </div>
                                 <select
                                     value={rotationWeeks}
@@ -3499,6 +3695,17 @@ export default function ROTAScheduler() {
 
 
 
+
+                            {/* Magic Toggle Button */}
+                            <button
+                                onClick={() => setIsMagicEnabled(!isMagicEnabled)}
+                                title={isMagicEnabled ? "Disable Magic Effects" : "Enable Magic Effects"}
+                                className={`p-2 rounded-xl border transition-all shadow-sm ${isDarkMode 
+                                    ? (isMagicEnabled ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400' : 'bg-slate-800 border-slate-700 text-slate-500 hover:text-indigo-400') 
+                                    : (isMagicEnabled ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'bg-white border-slate-200 text-slate-400 hover:text-indigo-600')}`}
+                            >
+                                <Wand2 size={18} className={isMagicEnabled ? 'animate-pulse' : ''} />
+                            </button>
 
                             {/* Theme Toggle with Auto Mode */}
                             <div className="relative group">
